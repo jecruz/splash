@@ -102,7 +102,7 @@ std::optional<ExpectedConfig> expectedOneLane(uint32_t cores,
 
 ExpectedConfig expectedDecode(uint32_t family, uint32_t cores, LinearMatrix matrix,
                               uint32_t lanes, LinearEpilogue epilogue) {
-  if (family == 9 && !(lanes >= 3 && epilogue == LinearEpilogue::None &&
+  if (family == 9 && cores != 60 && !(lanes >= 3 && epilogue == LinearEpilogue::None &&
                       matrix.outputSize / 256 >= 2 * cores)) {
     const uint32_t columns = epilogue == LinearEpilogue::GateUp ? 32 : 64;
     const uint32_t grid = matrix.outputSize / columns;
@@ -218,7 +218,7 @@ void narrowM24BoundaryPlans() {
 
 void baselinePlans() {
   for (const uint32_t family : {9U, 10U, 11U}) {
-    for (const uint32_t reportedCores : {0U, 8U, 10U, 16U, 18U, 20U, 31U, 32U, 33U, 40U, 80U}) {
+    for (const uint32_t reportedCores : {0U, 8U, 10U, 16U, 18U, 20U, 31U, 32U, 33U, 40U, 60U, 80U}) {
       const uint32_t cores = reportedCores ? reportedCores : 32U;
       DeviceCapabilities device;
       device.appleGpuFamily = family;
@@ -507,11 +507,11 @@ void planContracts(uint32_t family, uint32_t cores, size_t &widestCandidates) {
         // the split tiles when K allows them: Split32 for every decode
         // epilogue, Split64 for the single-stream ones.
         require((fourScopeCandidates != 0) ==
-                    (family == 9 || (lanes == 3 && epilogue != LinearEpilogue::GateUp) ||
-                     (lanes == 1 && (family == 9 || epilogue == LinearEpilogue::None || matrix.inputSize % 1024 == 0))),
+                    ((family == 9 && cores != 60) || (lanes == 3 && epilogue != LinearEpilogue::GateUp) ||
+                     (lanes == 1 && ((family == 9 && cores != 60) || epilogue == LinearEpilogue::None || matrix.inputSize % 1024 == 0))),
                 "Linear candidate set omitted or added four-SIMDgroup plans");
         uint32_t legalSplits = 0;
-        if (family == 9)
+        if (family == 9 && cores != 60)
           for (uint32_t split : {1U, 2U, 4U, 8U})
             legalSplits += matrix.inputSize % (64 * split) == 0;
         require(simdgroupCandidates == legalSplits,
@@ -862,7 +862,9 @@ void checkReference(const Q4Projection &p, const Q4Projection &gate,
       const float actual = fp32(output[index]);
       if (!std::isfinite(actual) || std::abs(actual - expected) > tolerance) {
         std::cerr << "reference row=" << row << " col=" << column
-                  << " actual=" << actual << " expected=" << expected << '\n';
+                  << " actual=" << actual << " expected=" << expected
+                  << " projection=" << projection << " gate=" << gateValue
+                  << " epilogue=" << uint32_t(workload.epilogue) << '\n';
         throw std::runtime_error("Linear failed independent packed-Q4 oracle");
       }
     }
@@ -968,6 +970,7 @@ void numericalCase(metal::MetalBackend &backend, Q4Linear &linear,
   struct SplitOutput final {
     std::vector<uint16_t> output, residual;
     std::string_view pipeline;
+    LinearConfig configuration;
     bool simdgroup = false;
   };
   std::vector<SplitOutput> splitOutputs;
@@ -1092,7 +1095,8 @@ void numericalCase(metal::MetalBackend &backend, Q4Linear &linear,
     const auto *output = static_cast<const uint16_t *>(b.output.contents());
     const uint64_t elements = uint64_t{storageRows} * p.outputSize;
     if (plan.partialSums() > 1 || plan.usesSimdgroup()) {
-      splitOutputs.push_back({{output, output + elements}, immutableResidual, plan.pipeline(), plan.usesSimdgroup()});
+      splitOutputs.push_back({{output, output + elements}, immutableResidual,
+                              plan.pipeline(), plan.configuration(), plan.usesSimdgroup()});
     } else {
       if (baseline.empty()) baseline.assign(output, output + elements);
       require(std::memcmp(baseline.data(), output, elements * 2) == 0,
@@ -1136,10 +1140,25 @@ void numericalCase(metal::MetalBackend &backend, Q4Linear &linear,
         reference.up = fp32(upReference[i]);
       }
       if (!tuning::withinSplitTolerance(fp32(split.output[i]), workload.epilogue, reference, toleranceSlack)) {
+        const uint32_t row = static_cast<uint32_t>(i / p.outputSize);
+        const uint32_t column = static_cast<uint32_t>(i % p.outputSize);
+        const float projection = affineReference(p, inputValues, row, column);
+        float oracle = projection;
+        if (workload.epilogue == LinearEpilogue::Residual)
+          oracle += fp32(split.residual[i]);
+        if (workload.epilogue == LinearEpilogue::GateUp) {
+          const float gateValue = affineReference(gate, inputValues, row, column);
+          oracle = tuning::silu(gateValue) * projection;
+        }
         std::cerr << "split element=" << i << " actual=" << fp32(split.output[i])
                   << " reference=" << reference.value << " residual=" << reference.residual
                   << " gate=" << reference.gate << " up=" << reference.up
                   << " bound=" << tuning::splitTolerance(workload.epilogue, reference, toleranceSlack)
+                  << " oracle=" << fp32(bf16(oracle))
+                  << " tile=" << uint32_t(split.configuration.tile)
+                  << " groups=" << split.configuration.groups
+                  << " splits=" << split.configuration.splits
+                  << " simdgroups=" << uint32_t(split.configuration.simdgroups)
                   << " matrix=" << p.outputSize << 'x' << p.inputSize
                   << " epilogue=" << uint32_t(workload.epilogue)
                   << " pipeline=" << split.pipeline << '\n';
@@ -1206,6 +1225,7 @@ int main(int argc, char **argv) {
     // Apple10 exercises the MPP-only candidate bound.
     size_t widestCandidates = 0;
     planContracts(9, 0, widestCandidates);
+    planContracts(9, 60, widestCandidates);
     planContracts(10, 16, widestCandidates);
     require(widestCandidates == Q4Linear::kMaximumCandidates,
             "no covered workload reaches the Linear candidate bound");

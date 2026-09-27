@@ -31,7 +31,8 @@ struct RunTiming final {
   for (size_t lane = 0; lane < baseline.lanes.size(); ++lane)
     if (!baseline.lanes[lane].sameWorkAs(candidate.lanes[lane]))
       throw std::runtime_error("cannot confirm different warmup work at lane " +
-                               std::to_string(lane + 1));
+                               std::to_string(lane + 1) + ": " +
+                               baseline.lanes[lane].workDifference(candidate.lanes[lane]));
   return {{{baselineGpuSeconds, candidateGpuSeconds, order, false},
            {baseline.wallSeconds, candidate.wallSeconds, order, false}}};
 }

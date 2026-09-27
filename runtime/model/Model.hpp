@@ -382,6 +382,21 @@ struct WarmupLaneResult final {
         pendingToken.has_value() == other.pendingToken.has_value() &&
         committedTokens == other.committedTokens;
   }
+
+  // Describe the first field that prevents paired work equivalence.
+  [[nodiscard]] std::string workDifference(const WarmupLaneResult &other) const {
+    if (step.requestId != other.step.requestId) return "requestId";
+    if (step.consumedPromptTokens != other.step.consumedPromptTokens) return "consumedPromptTokens";
+    if (step.outputTokens.size() != other.step.outputTokens.size()) return "outputTokenCount";
+    if (step.finished != other.step.finished) return "finished";
+    if (step.nextDecodeStage != other.step.nextDecodeStage) return "nextDecodeStage";
+    if (step.draftedTokens != other.step.draftedTokens) return "draftedTokens";
+    if (step.acceptedDraftTokens != other.step.acceptedDraftTokens) return "acceptedDraftTokens";
+    if (step.outputTokensWithoutKv != other.step.outputTokensWithoutKv) return "outputTokensWithoutKv";
+    if (pendingToken.has_value() != other.pendingToken.has_value()) return "pendingTokenPresence";
+    if (committedTokens != other.committedTokens) return "committedTokens";
+    return "unknown";
+  }
 };
 
 struct WarmupStepResult final {

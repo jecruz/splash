@@ -85,6 +85,44 @@ uint64_t checkedAdd(uint64_t left, uint64_t right, std::string_view label) {
   return left + right;
 }
 
+ops::OperatorChoices m3UltraQwen38Profile(
+    const DeviceCapabilities &device,
+    const model::ModelPackage &package) {
+  constexpr std::string_view manifestSha256 =
+      "40121d0d933fb27a7206248a592451f9ebbd73671f19ce3162cf27a7db0968d5";
+  if (device.appleGpuFamily != 9 || device.gpuCoreCount != 60 ||
+      package.name() != "Qwen3.8-27B" ||
+      digestHex(package.descriptor.packageManifestSha256) != manifestSha256)
+    return {};
+
+  using namespace ops;
+  return OperatorChoices{
+      .linear = {
+          {{{256, 5120}, 24, LinearPhase::Decode, LinearEpilogue::None},
+           {LinearTile::N128, 2, LinearSimdgroups::Eight, 1}},
+          {{{1280, 5120}, 8, LinearPhase::Decode, LinearEpilogue::None},
+           {LinearTile::Split32, 40, LinearSimdgroups::Four, 1}},
+          {{{5120, 6144}, 24, LinearPhase::Decode, LinearEpilogue::Residual},
+           {LinearTile::N128, 40, LinearSimdgroups::Four, 1}},
+          {{{5120, 17408}, 8, LinearPhase::Decode, LinearEpilogue::None},
+           {LinearTile::Split32, 160, LinearSimdgroups::Four, 1}},
+          {{{5120, 17408}, 8, LinearPhase::Decode, LinearEpilogue::Residual},
+           {LinearTile::Split32, 160, LinearSimdgroups::Four, 1}},
+          {{{5120, 17408}, 24, LinearPhase::Decode, LinearEpilogue::Residual},
+           {LinearTile::N128, 40, LinearSimdgroups::Four, 1}},
+          {{{5120, 17408}, 512, LinearPhase::Prefill, LinearEpilogue::Residual},
+           {LinearTile::N128, 0, LinearSimdgroups::Four, 1}},
+          {{{5120, 25600}, 8, LinearPhase::Decode, LinearEpilogue::None},
+           {LinearTile::Split64, 80, LinearSimdgroups::Eight, 1}},
+          {{{14336, 5120}, 256, LinearPhase::Prefill, LinearEpilogue::None},
+           {LinearTile::N128, 0, LinearSimdgroups::Four, 1}},
+          {{{16640, 5120}, 8, LinearPhase::Decode, LinearEpilogue::None},
+           {LinearTile::Split64, 260, LinearSimdgroups::Eight, 1}},
+          {{{248320, 5120}, 8, LinearPhase::Decode, LinearEpilogue::None},
+           {LinearTile::Paired256, 970, LinearSimdgroups::Four, 1}},
+      }};
+}
+
 uint64_t packedModelFileBytes(const std::filesystem::path &root) {
   uint64_t bytes = 0;
   for (std::string_view directory : {"target", "draft", "vision"}) {
@@ -362,6 +400,11 @@ RuntimeResources::create(const RuntimeResourcesConfig &config) {
   // One selection owner is used both before allocation and during encoding.
   // The engine lends it to model execution without inspecting kernel choices.
   ops::ExecutionPlans operators(device);
+  const auto profile = m3UltraQwen38Profile(device, package);
+  if (!profile.empty()) {
+    operators.install(profile);
+    logKernelStartup("Installed validated M3 Ultra Qwen3.8-27B policy.");
+  }
   model::ModelMemoryPlan modelMemoryPlan;
   auto prepareMemory = [&]() -> EngineMemoryPlan {
     try {

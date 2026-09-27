@@ -394,7 +394,10 @@ LinearConfig Q4Linear::baseline(LinearWorkload w) const {
   // two-N256-tiles-per-core boundary rather than model-specific dimensions.
   const bool widePlain = lanes >= 3 && w.epilogue == LinearEpilogue::None &&
       tiles256 >= kWideDecodeTilesPerCore * gpuCores_;
-  if (appleGpuFamily_ == 9 && !widePlain) {
+  // The 60-core Apple9 machine is the M3 Ultra tuning target. Its simdgroup
+  // decode path fails the independent packed-Q4 oracle on GateUp workloads;
+  // use the sequential decode tiles until that kernel passes qualification.
+  if (appleGpuFamily_ == 9 && gpuCores_ != 60 && !widePlain) {
     const uint32_t columns = w.epilogue == LinearEpilogue::GateUp ? 32 : 64;
     const uint32_t grid = w.matrix.outputSize / columns, groups = w.matrix.inputSize / 64;
     uint32_t splits = 1;
@@ -497,7 +500,7 @@ std::vector<LinearPlan> Q4Linear::candidates(LinearWorkload w) const {
       }
     }
   }
-  if (w.phase == LinearPhase::Decode && appleGpuFamily_ == 9) {
+  if (w.phase == LinearPhase::Decode && appleGpuFamily_ == 9 && gpuCores_ != 60) {
     const uint32_t n = w.matrix.outputSize;
     const uint32_t columns = w.epilogue == LinearEpilogue::GateUp ? 32 : 64;
     for (uint32_t splits = 1; splits <= kMaximumSimdgroupSplits; splits *= 2)

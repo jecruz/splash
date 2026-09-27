@@ -100,7 +100,12 @@ void comparableWarmupPairs() {
     if (change == 1) --last.committedTokens;
     if (change == 2) last.step.outputTokens.pop_back();
     if (change == 3) last.pendingToken.reset();
-    reject(baseline, different, "different warmup work at lane 4");
+    const std::array diagnostics{
+        std::string_view("lane 4: acceptedDraftTokens"),
+        std::string_view("lane 4: committedTokens"),
+        std::string_view("lane 4: outputTokenCount"),
+        std::string_view("lane 4: pendingTokenPresence")};
+    reject(baseline, different, diagnostics[change]);
   }
   auto different = candidate;
   different.lanes.pop_back();

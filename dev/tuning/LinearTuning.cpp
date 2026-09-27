@@ -10,6 +10,7 @@
 #include <cstring>
 #include <limits>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 
 namespace splash::ops::tuning {
@@ -145,8 +146,20 @@ void requireWithinSplitTolerance(LinearWorkload workload, const metal::MetalBuff
     if (residualValues) reference.residual = bf16ToFloat(residualValues[i]);
     if (gateValues) reference.gate = bf16ToFloat(gateValues[i]);
     if (upValues) reference.up = bf16ToFloat(upValues[i]);
-    if (!withinSplitTolerance(bf16ToFloat(splitValues[i]), workload.epilogue, reference, slack))
-      throw std::runtime_error("Linear tuning split-K candidate output exceeds its bf16 tolerance");
+    const float actual = bf16ToFloat(splitValues[i]);
+    const float tolerance = splitTolerance(workload.epilogue, reference, slack);
+    if (!withinSplitTolerance(actual, workload.epilogue, reference, slack)) {
+      std::ostringstream detail;
+      detail << "Linear tuning split-K candidate output exceeds its bf16 tolerance"
+             << " at element " << i << ": actual=" << actual
+             << ", reference=" << reference.value << ", bound=" << tolerance
+             << ", slack=" << slack << ", residual=" << reference.residual
+             << ", gate=" << reference.gate << ", up=" << reference.up
+             << ", matrix=" << workload.matrix.outputSize << 'x'
+             << workload.matrix.inputSize << ", rows=" << workload.rows
+             << ", epilogue=" << static_cast<unsigned>(workload.epilogue);
+      throw std::runtime_error(detail.str());
+    }
   }
 }
 

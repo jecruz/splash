@@ -8,7 +8,8 @@ production allocations, startup benchmarks or per-model/per-SKU tables.
 ## Policy ownership
 
 `runtime/ops/Linear.cpp` owns Q4 selection. Apple9 one-lane decode uses
-bfloat simdgroup matrices with 1/2/4/8 K partitions. Apple10 uses MPP tiles,
+bfloat simdgroup matrices with 1/2/4/8 K partitions except on the qualified
+60-core M3 Ultra, which uses the sequential safe baseline. Apple10 uses MPP tiles,
 with shape and core count selecting grids and the narrow M24 variant.
 Apple10 split-K tiles are offline candidates only. Their former one-lane
 defaults have been withdrawn after reproducible speculative-acceptance
@@ -30,6 +31,35 @@ MoE routing scales its row threshold with core count. The expert tile's
 four-SIMD-group Apple9 decode default remains a family rule, measured on the
 40-core M3 Max. Smaller Apple9 devices need an expert-kernel comparison before
 claiming that rule is optimal. Prefill and Apple10 retain eight SIMD groups.
+
+## M3 Ultra qualification (2026-09-27)
+
+The 60-core Apple9 M3 Ultra exposed a numerical failure in the family-wide
+simdgroup decode path. Its safe baseline now uses sequential decode tiles and
+does not enumerate Apple9 simdgroup decode candidates on this 60-core device;
+other Apple9 core counts retain their prior policy. On the M3 Ultra, all
+production-shaped Q4 Linear candidates passed the independent packed-Q4
+reference checks, including Split32 and Split64. This hardware-specific
+baseline is covered by the `linear-plan` GPU suite.
+
+The installed Qwen3.8-27B package was calibrated with 30 seconds per key. The
+resulting 11 operator choices are enabled only for Apple GPU family 9 with 60
+cores and the exact package manifest SHA-256
+`40121d0d933fb27a7206248a592451f9ebbd73671f19ce3162cf27a7db0968d5`. Complete
+graph confirmation used 12 paired runs: decode batch 1 improved 22.0% and batch
+3 improved 4.9%; prefill and batch 4 were unchanged within noise, while batch
+2 was effectively flat with a 0.0% GPU regression. Matched same-host HTTP ABBA
+checks (two samples per binary) preserved response transcripts and passed the
+2% regression bound. Qwen3.8 decode improved 22.6% (13.06 to 10.11 ms/token);
+cold TTFT changed by -0.3% at 2,048 tokens and -0.01% at 10,000 tokens. Exact
+cache TTFT improved by 2.8% and 1.5%, respectively. Qwen3.6-35B-A3B stayed on
+the safe defaults; its decode and all TTFT comparisons were within 1.1% of
+baseline. These measurements are an initial qualification with two samples,
+not a general performance guarantee.
+
+Do not broaden this profile to other package manifests or Apple9 core counts.
+Retain it only if matched same-host HTTP ABBA measurements preserve response
+transcripts and show no material TTFT or decode regression for both models.
 
 ## Bounded offline calibration
 
