@@ -1,6 +1,7 @@
 # Installed into the same reproducible environment after requirements.txt.
 annotated-types==0.8.0
 distro==1.9.0
+duckdb==1.5.5
 jiter==0.16.0
 openai==2.54.0
 pydantic==2.13.4

@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import random
 import statistics
 import sys
 import time
@@ -121,7 +122,7 @@ def measure(server, model, content, output_tokens, scenario, context, timeout):
 
 
 def summarize(records: list[dict], maximum_regression: float) -> list[dict]:
-    groups = defaultdict(lambda: defaultdict(list))
+    groups = defaultdict(lambda: defaultdict(dict))
     outputs = {}
     for row in records:
         key = row["sample"], row["context"], row["scenario"]
@@ -142,15 +143,31 @@ def summarize(records: list[dict], maximum_regression: float) -> list[dict]:
             )
         else:
             latency = row["metrics"]["request_latency"]["ttft_ms"]
-        groups[row["context"], row["scenario"]][row["version"]].append(latency)
+        groups[row["context"], row["scenario"]][row["version"]][row["sample"]] = latency
     results = []
     if any(set(pair) != {"baseline", "candidate"} for pair in outputs.values()):
         raise ValueError("unpaired request samples")
     for (context, scenario), versions in sorted(groups.items()):
-        if len(versions["baseline"]) != len(versions["candidate"]):
+        if set(versions["baseline"]) != set(versions["candidate"]):
             raise ValueError("unpaired performance samples")
-        baseline = statistics.median(versions["baseline"])
-        candidate = statistics.median(versions["candidate"])
+        baseline_values = list(versions["baseline"].values())
+        candidate_values = list(versions["candidate"].values())
+        baseline = statistics.median(baseline_values)
+        candidate = statistics.median(candidate_values)
+        paired_changes = [
+            versions["candidate"][sample] / versions["baseline"][sample] - 1
+            for sample in versions["baseline"]
+        ]
+        generator = random.Random(1973)
+        draws = sorted(
+            statistics.median(
+                paired_changes[generator.randrange(len(paired_changes))]
+                for _ in paired_changes
+            )
+            for _ in range(20_000)
+        )
+        baseline_sorted = sorted(baseline_values)
+        candidate_sorted = sorted(candidate_values)
         ratio = candidate / baseline
         results.append(
             {
@@ -159,8 +176,25 @@ def summarize(records: list[dict], maximum_regression: float) -> list[dict]:
                 "metric": "decode_ms_per_token" if scenario == "decode" else "ttft_ms",
                 "samples_per_binary": len(versions["baseline"]),
                 "baseline_median": baseline,
+                "baseline_p10": baseline_sorted[
+                    max(0, int(0.1 * (len(baseline_sorted) - 1)))
+                ],
+                "baseline_p90": baseline_sorted[
+                    min(len(baseline_sorted) - 1, int(0.9 * (len(baseline_sorted) - 1)))
+                ],
                 "candidate_median": candidate,
+                "candidate_p10": candidate_sorted[
+                    max(0, int(0.1 * (len(candidate_sorted) - 1)))
+                ],
+                "candidate_p90": candidate_sorted[
+                    min(
+                        len(candidate_sorted) - 1,
+                        int(0.9 * (len(candidate_sorted) - 1)),
+                    )
+                ],
                 "ratio": ratio,
+                "paired_median_change": statistics.median(paired_changes),
+                "paired_median_change_bootstrap_95": [draws[499], draws[19_499]],
                 "pass": ratio <= 1 + maximum_regression,
             }
         )

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Add paired GSM8K exact-answer benchmarks with direct HTTP and Pi harnesses.
+
 ### Changed
 
 - Use a numerically qualified sequential Q4 decode baseline on 60-core Apple9

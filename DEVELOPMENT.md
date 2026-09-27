@@ -400,6 +400,33 @@ model revision, actual input/output token counts, and cache hits with results.
 Keep cold prefill, cached TTFT and sustained decode separate; a UI token rate
 alone does not measure end-to-end agent performance.
 
+For a before/after task-quality comparison, use the same binary and package
+arguments with `dev.benchmarks.quality_regression`. It scores exact numeric
+GSM8K answers on a deterministic sample from a pinned Hub revision, retains
+every completion, and reports Wilson accuracy intervals plus a paired bootstrap
+interval for the accuracy change. Keep the JSONL dataset and reports outside the
+source checkout. With `--harness pi`, the benchmark invokes Pi once per example
+against the isolated Splash endpoint, preserves the configured Pi settings,
+extensions, skills and prompts, disables tools for this pure-answer workload,
+and uses a benchmark-specific system prompt and deterministic request settings.
+Pi's configured model ID is replaced only in its temporary agent directory so
+requests address the exact Splash model ID. The direct HTTP harness is useful
+for separating model-answer quality from agent harness overhead.
+
+```sh
+.venv/bin/python -m dev.benchmarks.quality_regression \
+  --harness pi --model incoai/Qwen3.8-27B-Splash \
+  --binary /path/to/candidate/build/splash \
+  --baseline-binary /path/to/baseline/build/splash \
+  --package /path/to/Qwen3.8-27B-Splash \
+  --dataset /path/to/gsm8k-100.jsonl --limit 100 \
+  --output /path/to/evidence/qwen38-pi-quality.json
+```
+
+Use `--harness http` for direct chat completions. The GSM8K exact-match score
+checks the final numeric answer only; it does not grade reasoning style or
+explanations. For the Qwen3.6-35B-A3B package, pass that package and model ID.
+
 For slow tool-bearing requests, the `latency` section of `/status` separates
 preparation, tokenization, grammar preparation, native queueing and TTFT. Grammar preparation
 includes construction, compilation/cache lookup and per-request cloning;
