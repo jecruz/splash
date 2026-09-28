@@ -26,6 +26,7 @@ DATASET_FILE = "main/test-00000-of-00001.parquet"
 DATASET_ROWS = 1319
 ANSWER_PATTERN = re.compile(r"####\s*\$?\s*([-+]?[\d,]+(?:\.\d+)?)\s*$", re.MULTILINE)
 PROFILE_LOG_LINE = "Installed validated M3 Ultra Qwen3.8-27B policy."
+PREFILL_PROFILE_LOG_LINE = "Enabled two-way Q8 prefill attention profile."
 PI_MODEL_IDS = {
     "incoai/Qwen3.8-27B-Splash": "incoai/Qwen3.8-27B-Splash",
     "incoai/Qwen3.6-35B-A3B-Splash": "incoai/Qwen3.6-35B-A3B-Splash",
@@ -418,16 +419,22 @@ def run_version(
         status = server.wait_ready(args.startup_timeout)
         smoke.validate_status(status, args.kv_format)
         startup_log = server.tail()
-        expect_profile = (
-            version == "candidate" and args.model == "incoai/Qwen3.8-27B-Splash"
-        )
-        if expect_profile:
+        is_qwen38 = args.model == "incoai/Qwen3.8-27B-Splash"
+        expect_prefill_profile = version == "candidate" and is_qwen38
+        if is_qwen38:
             smoke.require(
                 PROFILE_LOG_LINE in startup_log,
-                "candidate Qwen3.8 M3 Ultra profile was not installed",
+                f"{version} Qwen3.8 M3 Ultra base profile was not installed",
             )
-        if PROFILE_LOG_LINE in startup_log and not expect_profile:
-            raise smoke.SmokeFailure("unexpected Qwen3.8 M3 Ultra profile activation")
+        elif PROFILE_LOG_LINE in startup_log:
+            raise smoke.SmokeFailure("unexpected Qwen3.8 M3 Ultra base profile activation")
+        if expect_prefill_profile:
+            smoke.require(
+                PREFILL_PROFILE_LOG_LINE in startup_log,
+                "candidate Qwen3.8 two-way prefill profile was not installed",
+            )
+        elif PREFILL_PROFILE_LOG_LINE in startup_log:
+            raise smoke.SmokeFailure("unexpected two-way prefill profile activation")
         if args.harness == "pi":
             prepare_pi_agent_dir(pi_agent_dir, server.port, args.model)
         for example in examples:
@@ -479,6 +486,7 @@ def run_version(
             "binary": str(binary.resolve()),
             "identity": status["identity"],
             "profile_installed": PROFILE_LOG_LINE in startup_log,
+            "prefill_profile_installed": PREFILL_PROFILE_LOG_LINE in startup_log,
         }, results
     except Exception as error:
         raise smoke.SmokeFailure(

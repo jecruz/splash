@@ -9,6 +9,7 @@
 // usage: attention-sweep METALLIB [--histories 0,2048,...] [--shapes 27b,35b]
 //                        [--lanes 1,4] [--repeat N] [--phases both|verify|prefill]
 //                        [--compare-metallib PATH] [--kv-format int8|bf16]
+//                        [--prefill-configs default,two,cooperative,two-cooperative]
 #include "metal/CommandGraph.hpp"
 #include "metal/MetalBackend.hpp"
 #include "ops/ExecutionPlans.hpp"
@@ -17,6 +18,7 @@
 #include <array>
 #include <bit>
 #include <charconv>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -60,6 +62,7 @@ uint16_t bf16(float value) {
 struct Plan final {
   AttentionShape shape;
   bool prefill = false;
+  PrefillAttentionConfig prefillConfig;
   VerifyAttentionConfig verify;
   uint32_t lanes = 0;
   uint32_t rows = 0;
@@ -77,12 +80,13 @@ struct Plan final {
 };
 
 Plan makePlan(AttentionShape shape, bool prefill, uint32_t lanes, uint32_t history,
-              VerifyAttentionConfig verify = {}) {
+              VerifyAttentionConfig verify = {}, PrefillAttentionConfig prefillConfig = {}) {
   if (!lanes || lanes > kMaximumLanes)
     throw std::invalid_argument("--lanes must contain values from 1 to 4");
   Plan plan;
   plan.shape = shape;
   plan.prefill = prefill;
+  plan.prefillConfig = prefillConfig;
   plan.verify = verify;
   plan.lanes = prefill ? 1 : lanes;
   plan.rows = prefill ? kPrefillRows : kVerifyRows;
@@ -90,7 +94,7 @@ Plan makePlan(AttentionShape shape, bool prefill, uint32_t lanes, uint32_t histo
   AttentionWorkspace scratch;
   if (prefill) {
     scratch = PagedAttention::prefillPlan(plan.rows, shape.queryHeads, plan.layout(),
-                                          history, PrefillAttentionConfig{})
+                                          history, prefillConfig)
                   .workspace;
   } else {
     scratch = PagedAttention::verifyPlan(plan.lanes, shape.queryHeads, plan.layout(),
@@ -159,7 +163,7 @@ public:
     if (plan_.prefill) {
       const auto attentionPlan = PagedAttention::prefillPlan(
           plan_.rows, plan_.shape.queryHeads, plan_.layout(), plan_.histories[0],
-          PrefillAttentionConfig{});
+          plan_.prefillConfig);
       PagedAttention::addPrefillStore(result, layer_, get(Tensor::ChunkKeys),
                                       get(Tensor::ChunkValues), tables_[0], stores_[0],
                                       plan_.layout());
@@ -177,6 +181,27 @@ public:
           stores_, attention_, attentionPlan);
     }
     return result;
+  }
+
+  std::pair<double, double> outputDifference(const Fixture &other) const {
+    const auto left = get(Tensor::Output), right = other.get(Tensor::Output);
+    if (left.sizeBytes() != right.sizeBytes())
+      throw std::runtime_error("prefill attention candidates produced different output sizes");
+    const auto *leftValues = static_cast<const uint16_t *>(left.contents());
+    const auto *rightValues = static_cast<const uint16_t *>(right.contents());
+    double maximumAbsoluteDifference = 0.0, dot = 0.0, leftSquared = 0.0, rightSquared = 0.0;
+    for (uint64_t i = 0; i < left.sizeBytes() / sizeof(uint16_t); ++i) {
+      const float a = std::bit_cast<float>(uint32_t{leftValues[i]} << 16);
+      const float b = std::bit_cast<float>(uint32_t{rightValues[i]} << 16);
+      if (!std::isfinite(b))
+        throw std::runtime_error("prefill attention candidate produced nonfinite output");
+      maximumAbsoluteDifference = std::max(maximumAbsoluteDifference,
+                                           double(std::abs(a - b)));
+      dot += double(a) * b;
+      leftSquared += double(a) * a;
+      rightSquared += double(b) * b;
+    }
+    return {maximumAbsoluteDifference, dot / std::sqrt(leftSquared * rightSquared)};
   }
 
   bool sameOutput(const Fixture &other) const {
@@ -275,9 +300,91 @@ private:
 
 struct Case final {
   double fusedMilliseconds = 0.0;
+  std::vector<double> fusedSamplesMilliseconds;
   std::map<std::string, double> pipelineMilliseconds;
   uint64_t kvBytes = 0;
+  double outputMaximumAbsoluteDifference = 0.0;
+  double outputCosineSimilarity = 1.0;
 };
+
+double median(std::vector<double> values);
+
+std::string prefillConfigName(PrefillAttentionConfig config) {
+  const bool two = config.splitMultiplier == PrefillSplitMultiplier::Two;
+  const bool cooperative = config.scalePlacement == AttentionScalePlacement::Cooperative;
+  return two ? (cooperative ? "two-cooperative" : "two")
+             : (cooperative ? "cooperative" : "default");
+}
+
+PrefillAttentionConfig parsePrefillConfig(std::string_view value) {
+  if (value == "default") return {};
+  if (value == "two") return {PrefillSplitMultiplier::Two};
+  if (value == "cooperative")
+    return {PrefillSplitMultiplier::One, AttentionScalePlacement::Cooperative};
+  if (value == "two-cooperative")
+    return {PrefillSplitMultiplier::Two, AttentionScalePlacement::Cooperative};
+  throw std::invalid_argument("--prefill-configs takes default, two, cooperative, or two-cooperative");
+}
+
+std::vector<Case> measurePrefillConfigs(metal::MetalBackend &backend,
+                                        AttentionShape shape, uint32_t history,
+                                        uint32_t repeat,
+                                        std::span<const PrefillAttentionConfig> configs) {
+  std::vector<std::unique_ptr<Fixture>> fixtures;
+  std::vector<metal::CommandGraph> graphs;
+  std::vector<std::vector<double>> fused(configs.size());
+  std::vector<std::map<std::string, std::vector<double>>> perPipeline(configs.size());
+  std::vector<Case> results(configs.size());
+  for (size_t i = 0; i < configs.size(); ++i) {
+    auto plan = makePlan(shape, true, 1, history, {}, configs[i]);
+    fixtures.push_back(std::make_unique<Fixture>(backend, std::move(plan)));
+    graphs.push_back(fixtures.back()->graph());
+    results[i].kvBytes = fixtures.back()->historyBytes();
+  }
+  // Warm and measure candidates in rotating order to reduce clock drift.
+  for (size_t i = 0; i < configs.size(); ++i)
+    static_cast<void>(backend.submitCommand(graphs[i].dispatches()));
+  double warmup = 0.0;
+  while (warmup < 0.1)
+    for (size_t i = 0; i < configs.size(); ++i)
+      warmup += backend.submitCommand(graphs[i].dispatches()).gpuSeconds;
+  const auto baseline = std::find(configs.begin(), configs.end(), PrefillAttentionConfig{});
+  if (baseline == configs.end())
+    throw std::invalid_argument("multiple --prefill-configs must include default");
+  const size_t baselineIndex = size_t(std::distance(configs.begin(), baseline));
+  for (size_t i = 0; i < fixtures.size(); ++i) {
+    const auto [maximumDifference, cosine] =
+        fixtures[baselineIndex]->outputDifference(*fixtures[i]);
+    if (!(maximumDifference < 0.02 && cosine > 0.9995))
+      throw std::runtime_error("prefill attention candidate exceeds correctness tolerance");
+    results[i].outputMaximumAbsoluteDifference = maximumDifference;
+    results[i].outputCosineSimilarity = cosine;
+  }
+  for (uint32_t round = 0; round < repeat; ++round)
+    for (size_t offset = 0; offset < configs.size(); ++offset) {
+      const size_t i = (round + offset) % configs.size();
+      fused[i].push_back(backend.submitCommand(graphs[i].dispatches()).gpuSeconds * 1000.0);
+    }
+  backend.setDispatchProfiling(true);
+  for (uint32_t round = 0; round < repeat; ++round)
+    for (size_t offset = 0; offset < configs.size(); ++offset) {
+      const size_t i = (round + offset) % configs.size();
+      static_cast<void>(backend.submitCommand(graphs[i].dispatches()));
+      std::map<std::string, double> run;
+      for (const auto &timing : backend.takeDispatchProfile())
+        run[timing.pipelineName] += timing.gpuSeconds * 1000.0;
+      for (const auto &[name, milliseconds] : run)
+        perPipeline[i][name].push_back(milliseconds);
+    }
+  backend.setDispatchProfiling(false);
+  for (size_t i = 0; i < configs.size(); ++i) {
+    results[i].fusedSamplesMilliseconds = fused[i];
+    results[i].fusedMilliseconds = median(std::move(fused[i]));
+    for (auto &[name, samples] : perPipeline[i])
+      results[i].pipelineMilliseconds[name] = median(std::move(samples));
+  }
+  return results;
+}
 
 double median(std::vector<double> values) {
   std::sort(values.begin(), values.end());
@@ -322,6 +429,7 @@ std::vector<Case> measure(std::span<metal::MetalBackend *> backends,
           perPipeline[i][name].push_back(milliseconds);
     }
   for (size_t i = 0; i < backends.size(); ++i) {
+    results[i].fusedSamplesMilliseconds = fused[i];
     backends[i]->setDispatchProfiling(false);
     results[i].fusedMilliseconds = median(fused[i]);
     for (auto &[name, samples] : perPipeline[i])
@@ -357,11 +465,21 @@ std::vector<uint32_t> parseList(const std::string &text, uint32_t minimum,
 }
 
 std::string json(const Case &item, const std::string &shape, uint32_t history,
-                 const std::string &kind, uint32_t lanes, size_t variant) {
-  std::string out = "{\"variant\":" + std::to_string(variant) + ",\"shape\":\"" + shape + "\",\"history\":" + std::to_string(history) +
+                 const std::string &kind, uint32_t lanes, size_t variant,
+                 std::string_view config = "default") {
+  std::string out = "{\"variant\":" + std::to_string(variant) + ",\"config\":\"" +
+                    std::string(config) + "\",\"shape\":\"" + shape + "\",\"history\":" + std::to_string(history) +
                     ",\"kind\":\"" + kind + "\",\"lanes\":" + std::to_string(lanes) +
                     ",\"fused_ms\":" + std::to_string(item.fusedMilliseconds) +
-                    ",\"kv_bytes\":" + std::to_string(item.kvBytes) + ",\"pipelines\":{";
+                    ",\"fused_samples_ms\":[";
+  for (size_t i = 0; i < item.fusedSamplesMilliseconds.size(); ++i)
+    out += (i ? "," : "") + std::to_string(item.fusedSamplesMilliseconds[i]);
+  out += "]";
+  out +=
+                    ",\"kv_bytes\":" + std::to_string(item.kvBytes) +
+                    ",\"output_max_abs_diff\":" + std::to_string(item.outputMaximumAbsoluteDifference) +
+                    ",\"output_cosine\":" + std::to_string(item.outputCosineSimilarity) +
+                    ",\"pipelines\":{";
   bool first = true;
   for (const auto &[name, milliseconds] : item.pipelineMilliseconds) {
     out += (first ? "" : ",") + std::string("\"") + name + "\":" + std::to_string(milliseconds);
@@ -377,12 +495,14 @@ int main(int argc, const char *argv[]) {
     if (argc < 2) {
       std::cerr << "usage: attention-sweep METALLIB [--histories LIST] [--shapes 27b,35b] "
                    "[--lanes LIST] [--repeat N] [--phases both|verify|prefill] "
-                   "[--compare-metallib PATH] [--kv-format int8|bf16]\n";
+                   "[--compare-metallib PATH] [--kv-format int8|bf16] "
+                   "[--prefill-configs LIST]\n";
       return 64;
     }
     std::vector<uint32_t> histories{0, 2048, 8192, 16384, 32768, 65536, 131072};
     std::vector<uint32_t> lanes{1, 4};
     std::vector<std::string> shapes{"27b", "35b"};
+    std::vector<PrefillAttentionConfig> prefillConfigs{PrefillAttentionConfig{}};
     uint32_t repeat = 5;
     kv::Format format = kv::Format::Int8;
     std::string comparisonLibrary, phases = "both";
@@ -423,6 +543,23 @@ int main(int argc, const char *argv[]) {
           if (comma == std::string::npos) break;
           start = comma + 1;
         }
+      } else if (option == "--prefill-configs") {
+        prefillConfigs.clear();
+        std::string text(argv[index + 1]);
+        size_t start = 0;
+        while (start <= text.size()) {
+          const size_t comma = text.find(',', start);
+          const auto value = text.substr(start, comma == std::string::npos ? std::string::npos
+                                                                           : comma - start);
+          const auto config = parsePrefillConfig(value);
+          if (std::find_if(prefillConfigs.begin(), prefillConfigs.end(), [&](const auto &item) {
+                return prefillConfigName(item) == prefillConfigName(config);
+              }) != prefillConfigs.end())
+            throw std::invalid_argument("--prefill-configs contains a duplicate configuration");
+          prefillConfigs.push_back(config);
+          if (comma == std::string::npos) break;
+          start = comma + 1;
+        }
       } else throw std::invalid_argument("unknown option " + option);
     }
     metal::MetalBackend backend(argv[1]);
@@ -444,10 +581,29 @@ int main(int argc, const char *argv[]) {
                 << geometry.kvHeads << " KV heads, d=" << geometry.headDimension << ")\n";
       for (uint32_t history : histories) {
         auto report = [&](bool prefill, uint32_t lane) {
-          const auto cases = measure(backends, makePlan(geometry, prefill, lane, history), repeat);
+          if (prefill && prefillConfigs.size() > 1 && comparison)
+            throw std::invalid_argument("--compare-metallib cannot be combined with multiple prefill configs");
+          if (prefill && prefillConfigs.size() > 1) {
+            const auto cases = measurePrefillConfigs(backend, geometry, history, repeat, prefillConfigs);
+            for (size_t i = 0; i < cases.size(); ++i) {
+              const auto config = prefillConfigName(prefillConfigs[i]);
+              std::cout << (firstCase ? "" : ",")
+                        << json(cases[i], name, history, "prefill", lane, 0, config);
+              firstCase = false;
+              std::cerr << history << " prefill lanes=1 config=" << config << " fused="
+                        << cases[i].fusedMilliseconds << " ms\n";
+            }
+            return;
+          }
+          const auto cases = measure(
+              backends,
+              makePlan(geometry, prefill, lane, history, {},
+                       prefill ? prefillConfigs.front() : PrefillAttentionConfig{}),
+              repeat);
           for (size_t i = 0; i < cases.size(); ++i) {
             std::cout << (firstCase ? "" : ",")
-                      << json(cases[i], name, history, prefill ? "prefill" : "verify", lane, i);
+                      << json(cases[i], name, history, prefill ? "prefill" : "verify", lane, i,
+                              prefill ? prefillConfigName(prefillConfigs.front()) : "default");
             firstCase = false;
             std::cerr << history << " " << (prefill ? "prefill" : "verify")
                       << " lanes=" << lane << " variant=" << i << " fused="

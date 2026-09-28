@@ -120,7 +120,14 @@ ops::OperatorChoices m3UltraQwen38Profile(
            {LinearTile::Split64, 260, LinearSimdgroups::Eight, 1}},
           {{{248320, 5120}, 8, LinearPhase::Decode, LinearEpilogue::None},
            {LinearTile::Paired256, 970, LinearSimdgroups::Four, 1}},
-      }};
+      },
+      .prefillAttention = {
+          {PrefillAttentionPolicy{
+               AttentionShape{24, 4, 256, kv::Format::Int8},
+               SPLASH_PREFILL_TOKEN_BUDGET},
+           PrefillAttentionConfig{PrefillSplitMultiplier::Two}},
+      },
+  };
 }
 
 uint64_t packedModelFileBytes(const std::filesystem::path &root) {
@@ -404,6 +411,7 @@ RuntimeResources::create(const RuntimeResourcesConfig &config) {
   if (!profile.empty()) {
     operators.install(profile);
     logKernelStartup("Installed validated M3 Ultra Qwen3.8-27B policy.");
+    logKernelStartup("Enabled two-way Q8 prefill attention profile.");
   }
   model::ModelMemoryPlan modelMemoryPlan;
   auto prepareMemory = [&]() -> EngineMemoryPlan {

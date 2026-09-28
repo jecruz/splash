@@ -96,6 +96,55 @@ short/long prompts and batch widths 1–4. Preserve the baseline when evidence
 is mixed. For the family-only MoE rule, separately compare four/eight groups
 on the missing hardware; the existing MoE tuner does not vary that rule.
 
+## Long-context prefill attention profiling
+
+`attention-sweep` can compare the four existing prefill attention configurations
+on one Metal device, rotating candidate order between samples and enforcing
+the production candidate gates (maximum absolute difference below 0.02 and
+cosine similarity above 0.9995) before reporting timings. It records both
+metrics and individual fused timing samples for each candidate. This is a synthetic, one-layer
+diagnostic; it does not establish whole-model speed or task quality, and it does
+not alter serving policy.
+
+```sh
+make -j8 build/engine-tests/attention-sweep
+build/engine-tests/attention-sweep build/splash.metallib \
+  --histories 2048,10000,32000,64000,128000 --shapes 27b,35b \
+  --repeat 31 --phases prefill \
+  --prefill-configs default,two,cooperative,two-cooperative
+```
+
+The configuration names map to the existing split multiplier and scale
+placement candidates in `PagedAttention::prefillCandidates()`. Save JSON output
+outside the checkout. A serving policy change still requires the production
+attention correctness suite, complete-graph confirmation, and paired HTTP plus
+Pi performance and quality qualification.
+
+### M3 Ultra Qwen3.8 prefill candidate (2026-09-27)
+
+The 60-core M3 Ultra sweep measured 31 fused-graph samples per candidate,
+history, and geometry with INT8 KV. Candidate order rotated per sample. The
+`two` split configuration passed the existing maximum-absolute-error `<0.02`
+and cosine `>0.9995` comparisons against default for both geometries at every
+history. Maximum absolute error was `0.000122`; cosine was at least `0.999998`.
+Paired bootstrap 95% intervals for the median prefill latency reduction were:
+
+| History | Qwen3.8-27B | Qwen3.6-35B-A3B |
+| ---: | ---: | ---: |
+| 2,048 | 12.06% [11.22%, 12.74%] | 10.08% [9.28%, 11.90%] |
+| 10,000 | 4.27% [4.00%, 7.64%] | 10.70% [9.89%, 11.54%] |
+| 32,000 | 6.12% [5.85%, 7.12%] | 5.23% [4.45%, 5.72%] |
+| 64,000 | 5.11% [4.61%, 5.51%] | 3.83% [3.36%, 4.14%] |
+| 128,000 | 4.93% [4.77%, 5.32%] | 3.85% [3.46%, 4.37%] |
+
+Cooperative scale placement alone was within about 1% of default; combining it
+with the two-way split produced only a small additional change over `two`.
+The Qwen3.8 runtime profile therefore selects `two` and remains gated by the
+existing Apple9/60-core/exact-manifest check. The Qwen3.6 result is a control;
+its serving default remains unchanged. These are synthetic one-layer results.
+Whole-model HTTP and Pi before/after speed and quality checks are required
+before treating the Qwen3.8 profile as qualified.
+
 ## Convergence validation (2026-09-21)
 
 - An independent before/after snapshot compares 1,591,200 default plans across
