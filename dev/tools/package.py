@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -185,6 +186,22 @@ def _package_staging_directory():
             raise
 
 
+def _open_pending_archive(dist, archive_name):
+    """Create a destination-side archive file with normal output permissions."""
+    for _ in range(10):
+        pending = dist / f".{archive_name}.{secrets.token_hex(8)}.tmp"
+        try:
+            descriptor = os.open(
+                pending,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o666,
+            )
+        except FileExistsError:
+            continue
+        return pending, os.fdopen(descriptor, "wb")
+    raise FileExistsError("could not allocate a unique pending package archive")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True)
@@ -253,21 +270,18 @@ def main(argv=None):
                 cwd=stage,
                 check=True,
             )
-            packed = temporary / archive.name
-            with tarfile.open(packed, "w:gz") as release:
-                release.add(
-                    stage,
-                    arcname=name,
-                    filter=lambda item: (
-                        None if "__pycache__" in Path(item.name).parts else item
-                    ),
-                )
-            with tempfile.NamedTemporaryFile(
-                prefix=f".{archive.name}.", suffix=".tmp", dir=dist, delete=False
-            ) as pending:
-                pending_archive = Path(pending.name)
-                with packed.open("rb") as source:
-                    shutil.copyfileobj(source, pending)
+            pending_archive, pending = _open_pending_archive(dist, archive.name)
+            with pending:
+                with tarfile.open(fileobj=pending, mode="w:gz") as release:
+                    release.add(
+                        stage,
+                        arcname=name,
+                        filter=lambda item: (
+                            None
+                            if "__pycache__" in Path(item.name).parts
+                            else item
+                        ),
+                    )
                 pending.flush()
                 os.fsync(pending.fileno())
         pending_archive.replace(archive)

@@ -5,12 +5,13 @@ import json
 import os
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import contextmanager, redirect_stderr
 from io import StringIO
 from pathlib import Path
 from unittest import mock
@@ -117,6 +118,62 @@ class PackageTests(unittest.TestCase):
                         f"splash-{version}-arm64-macos26/install/completions/official-models.txt"
                     ) as catalog:
                         self.assertEqual(catalog.read(), b"company/Published\n")
+                mode_reference = root / f"{version}-mode-reference"
+                mode_reference.touch(mode=0o666)
+                self.assertEqual(
+                    stat.S_IMODE(
+                        (root / f"dist/splash-{version}-arm64-macos26.tar.gz").stat().st_mode
+                    ),
+                    stat.S_IMODE(mode_reference.stat().st_mode),
+                )
+
+    def test_staging_cleanup_failure_keeps_existing_archive_and_removes_pending(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for folder, names in (
+                ("install", package.INSTALL_FILES),
+                ("install/completions", package.COMPLETION_FILES),
+                ("server", package.SERVER_FILES),
+                ("build", ("splash", "splash.metallib")),
+            ):
+                (root / folder).mkdir(parents=True)
+                for name in names:
+                    (root / folder / name).write_text("fixture")
+            (root / "LICENSE").write_text("fixture")
+            (root / "install/completions/official-models.txt").write_text(
+                "company/Published\n"
+            )
+            cached = root / "build/release/python-runtime.tar.gz"
+            cached.parent.mkdir()
+            with tarfile.open(cached, "w:gz"):
+                pass
+            archive = root / "dist/splash-cleanup-test-arm64-macos26.tar.gz"
+            original_archive = b"pre-existing release"
+
+            @contextmanager
+            def cleanup_failure():
+                with tempfile.TemporaryDirectory() as staging:
+                    archive.write_bytes(original_archive)
+                    yield Path(staging)
+                    raise OSError(errno.ENOTEMPTY, "Directory not empty", staging)
+
+            with (
+                mock.patch.object(package, "ROOT", root),
+                mock.patch.object(package, "PYTHON_SHA256", package.digest(cached)),
+                mock.patch.object(
+                    package.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 0),
+                ),
+                mock.patch.object(package, "_package_staging_directory", cleanup_failure),
+                mock.patch("sys.stdout"),
+                self.assertRaises(OSError) as raised,
+            ):
+                package.main(["--version", "cleanup-test", "--macos-min", "26.4"])
+
+            self.assertEqual(raised.exception.errno, errno.ENOTEMPTY)
+            self.assertEqual(archive.read_bytes(), original_archive)
+            self.assertEqual(list(archive.parent.glob(f".{archive.name}.*.tmp")), [])
 
     def test_release_has_only_runtime_files_and_excludes_credentials(self):
         with tempfile.TemporaryDirectory() as temporary:
