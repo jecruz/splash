@@ -2587,6 +2587,22 @@ class ServerTest(unittest.TestCase):
         self.assertGreater(before["started_at"], 0)
         self.assertLessEqual(before["started_at"], time.time())
 
+    def test_status_reports_process_memory_separately_from_native_memory(self):
+        harness = self.harness(FakeRuntime())
+        self.addCleanup(harness.close)
+        expected = {
+            "source": "proc_pid_rusage_info_v2",
+            "resident_size_bytes": 1234,
+            "phys_footprint_bytes": 5678,
+        }
+        with mock.patch.object(
+            api.document_worker, "process_memory_usage", return_value=expected
+        ) as process_memory_usage:
+            status, _, payload = harness.request("GET", "/status")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(payload)["process_memory"], expected)
+        process_memory_usage.assert_called_once_with(os.getpid())
+
     def test_http_error_logs_method_and_path_without_query_or_body(self):
         harness = self.harness(FakeRuntime())
         for method in ("GET", "POST", "DELETE"):

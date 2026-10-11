@@ -136,6 +136,10 @@ The limit measures logical reusable cache ownership, not Metal allocator
 backing or process memory. KV pool backing, recurrent-state residency, and Metal
 current/peak allocation are reported separately because eviction may make
 backing reusable without immediately returning it to the operating system.
+The HTTP `/status` response also reports the frontend process's current resident
+size and physical footprint under `process_memory`; on macOS these values come
+from `proc_pid_rusage_info_v2` and are separate from the native engine's Metal
+allocation counters.
 
 Authentication is off by default. Set `SPLASH_API_KEY` in the shell that runs
 `splash serve` and in the shell that runs an agent, and both sides use it.

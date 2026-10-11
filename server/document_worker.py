@@ -60,14 +60,37 @@ if sys.platform == "darwin":
     _libproc.proc_pid_rusage.restype = ctypes.c_int
 
 
-def _memory_bytes(pid):
+def process_memory_usage(pid):
+    """Return current resident and physical-footprint bytes for one process."""
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        raise ValueError("pid must be a positive integer")
     if sys.platform == "darwin":
         usage = _RusageInfo()
         if _libproc.proc_pid_rusage(pid, 2, ctypes.byref(usage)):
-            raise OSError(ctypes.get_errno(), "cannot inspect document worker")
-        return max(usage.resident_size, usage.phys_footprint)
+            raise OSError(ctypes.get_errno(), "cannot inspect process memory")
+        return {
+            "source": "proc_pid_rusage_info_v2",
+            "resident_size_bytes": int(usage.resident_size),
+            "phys_footprint_bytes": int(usage.phys_footprint),
+        }
     pages = int(Path(f"/proc/{pid}/statm").read_text().split()[1])
-    return pages * os.sysconf("SC_PAGE_SIZE")
+    return {
+        "source": "proc_statm",
+        "resident_size_bytes": pages * os.sysconf("SC_PAGE_SIZE"),
+        "phys_footprint_bytes": None,
+    }
+
+
+def _memory_bytes(pid):
+    usage = process_memory_usage(pid)
+    return max(
+        value
+        for value in (
+            usage["resident_size_bytes"],
+            usage["phys_footprint_bytes"],
+        )
+        if value is not None
+    )
 
 
 def _stop(process):

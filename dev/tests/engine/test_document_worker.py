@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import unittest
+import ctypes
 from dataclasses import asdict
 from unittest import mock
 
@@ -85,6 +86,35 @@ class DocumentWorkerTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "document_unavailable")
         self.assertFalse(document_worker._workers)
         self.assertFalse(documents._cache)
+
+    @unittest.skipUnless(sys.platform == "darwin", "uses Darwin proc_pid_rusage")
+    def test_process_memory_usage_reports_v2_resident_and_footprint(self):
+        def fill_usage(pid, flavor, pointer):
+            usage = ctypes.cast(
+                pointer, ctypes.POINTER(document_worker._RusageInfo)
+            ).contents
+            usage.resident_size = 1234
+            usage.phys_footprint = 5678
+            return 0
+
+        with mock.patch.object(
+            document_worker._libproc, "proc_pid_rusage", side_effect=fill_usage
+        ) as proc_pid_rusage:
+            result = document_worker.process_memory_usage(321)
+        self.assertEqual(
+            result,
+            {
+                "source": "proc_pid_rusage_info_v2",
+                "resident_size_bytes": 1234,
+                "phys_footprint_bytes": 5678,
+            },
+        )
+        proc_pid_rusage.assert_called_once()
+
+    def test_process_memory_usage_rejects_invalid_pid(self):
+        for pid in (True, 0, -1, "1"):
+            with self.subTest(pid=pid), self.assertRaises(ValueError):
+                document_worker.process_memory_usage(pid)
 
 
 if __name__ == "__main__":

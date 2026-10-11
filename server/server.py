@@ -22,6 +22,7 @@ from huggingface_hub.utils import validate_repo_id
 from transformers import AutoTokenizer
 
 if __package__:
+    from . import document_worker
     from . import images as image_input
     from . import json_codec, judgments
     from . import runtime as engine_runtime
@@ -62,6 +63,7 @@ if __package__:
     )
     from .thinking import ThinkingCodec, ThinkingKeyError, load_thinking_key
 else:
+    import document_worker
     import images as image_input
     import json_codec
     import judgments
@@ -1716,6 +1718,7 @@ class FrontendServer(ThreadingHTTPServer):
             "port": self.server_address[1],
             "started_at": self.started_at,
         }
+        status["process_memory"] = document_worker.process_memory_usage(os.getpid())
         status["http"] = {
             "requests": self.requests.stats(),
             "request_body_bytes": self.request_bodies.stats(),
