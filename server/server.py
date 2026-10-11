@@ -22,9 +22,8 @@ from huggingface_hub.utils import validate_repo_id
 from transformers import AutoTokenizer
 
 if __package__:
-    from . import document_worker
+    from . import document_worker, json_codec, judgments
     from . import images as image_input
-    from . import json_codec, judgments
     from . import runtime as engine_runtime
     from .api_shapes import (
         anthropic_response,

@@ -1,7 +1,7 @@
+import ctypes
 import subprocess
 import sys
 import unittest
-import ctypes
 from dataclasses import asdict
 from unittest import mock
 
