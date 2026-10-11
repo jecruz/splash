@@ -26,12 +26,17 @@ OPERATOR_WORKSPACE_POLICY = re.compile(
 QWEN38_PROFILE = re.compile(
     r"\bops::OperatorChoices\s+m3UltraQwen38Profile\s*\([^)]*\)\s*\{"
 )
+QWEN38_MANIFEST_SHA256 = (
+    "40121d0d933fb27a7206248a592451f9ebbd73671f19ce3162cf27a7db0968d5"
+)
 QWEN38_PROFILE_GUARD = re.compile(
-    r"\bif\s*\(\s*device\.appleGpuFamily\s*!=\s*9\s*\|\|\s*"
-    r"device\.gpuCoreCount\s*!=\s*60\s*\|\|\s*"
-    r'package\.name\(\)\s*!=\s*"Qwen3\.8-27B"\s*\|\|\s*'
-    r"digestHex\(package\.descriptor\.packageManifestSha256\)\s*!=\s*"
-    r"manifestSha256\s*\)\s*return\s*\{\s*\}\s*;",
+    r'\A\s*constexpr\s+std::string_view\s+manifestSha256\s*=\s*"'
+    + QWEN38_MANIFEST_SHA256
+    + r'";\s*if\s*\(\s*device\.appleGpuFamily\s*!=\s*9\s*\|\|\s*'
+    + r"device\.gpuCoreCount\s*!=\s*60\s*\|\|\s*"
+    + r'package\.name\(\)\s*!=\s*"Qwen3\.8-27B"\s*\|\|\s*'
+    + r"digestHex\(package\.descriptor\.packageManifestSha256\)\s*!=\s*"
+    + r"manifestSha256\s*\)\s*return\s*\{\s*\}\s*;",
     re.DOTALL,
 )
 
@@ -72,7 +77,7 @@ def guarded_runtime_policy(name: str, text: str) -> tuple[str, str | None]:
         return text, "runtime Qwen3.8 profile has an incomplete body"
 
     body = text[match.end():end]
-    if not QWEN38_PROFILE_GUARD.search(body):
+    if not QWEN38_PROFILE_GUARD.match(body):
         return text, "runtime Qwen3.8 profile is missing a required selector guard"
     return text[:match.start()] + text[end:], None
 

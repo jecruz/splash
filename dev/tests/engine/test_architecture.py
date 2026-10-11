@@ -110,7 +110,7 @@ class ArchitectureTests(unittest.TestCase):
         profile = '''ops::OperatorChoices m3UltraQwen38Profile(
     const DeviceCapabilities &device,
     const model::ModelPackage &package) {
-  constexpr std::string_view manifestSha256 = "approved-manifest";
+  constexpr std::string_view manifestSha256 = "__MANIFEST_SHA256__";
   if (device.appleGpuFamily != 9 || device.gpuCoreCount != 60 ||
       package.name() != "Qwen3.8-27B" ||
       digestHex(package.descriptor.packageManifestSha256) != manifestSha256)
@@ -122,6 +122,9 @@ class ArchitectureTests(unittest.TestCase):
   };
 }
 '''
+        profile = profile.replace(
+            "__MANIFEST_SHA256__", check_architecture.QWEN38_MANIFEST_SHA256
+        )
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             assembly = root / "runtime/engine/RuntimeResources.mm"
@@ -132,6 +135,21 @@ class ArchitectureTests(unittest.TestCase):
 
                 ungated = profile.replace("device.gpuCoreCount != 60 ||\n      ", "")
                 assembly.write_text(ungated)
+                self.assertEqual(
+                    check_architecture.check(),
+                    [
+                        "runtime/engine/RuntimeResources.mm: runtime Qwen3.8 "
+                        "profile is missing a required selector guard"
+                    ],
+                )
+
+                tautological = profile.replace(
+                    f'constexpr std::string_view manifestSha256 = '
+                    f'"{check_architecture.QWEN38_MANIFEST_SHA256}";',
+                    "auto manifestSha256 = "
+                    "digestHex(package.descriptor.packageManifestSha256);",
+                )
+                assembly.write_text(tautological)
                 self.assertEqual(
                     check_architecture.check(),
                     [
