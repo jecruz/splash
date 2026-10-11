@@ -179,6 +179,8 @@ def serve(args):
             "--max-context",
             "auto" if args.max_context is None else str(args.max_context),
         ]
+        if args.max_prefix_cache is not None:
+            command.extend(("--max-prefix-cache", str(args.max_prefix_cache)))
         if args.kv_format != "int8":
             command.extend(("--kv-format", args.kv_format))
         for name in args.served_model_name:
@@ -295,6 +297,16 @@ def _parse_max_memory(value):
     if not 1 <= result <= 2**63 - 1:
         raise argparse.ArgumentTypeError("use a positive value such as 32G")
     return result
+
+
+def _parse_max_prefix_cache(value):
+    """Parse a prefix-cache limit, including zero to disable retention."""
+    if value.strip() == "0":
+        return 0
+    size = _parse_max_memory(value)
+    if size is None:
+        raise argparse.ArgumentTypeError("use 0 or a positive byte count such as 8G")
+    return size
 
 
 def _parse_request_size(value):
@@ -430,6 +442,11 @@ def parse_args(argv=None):
         "--max-memory",
         type=_parse_max_memory,
         help="Metal budget ceiling, e.g. 28G (default: auto)",
+    )
+    server.add_argument(
+        "--max-prefix-cache",
+        type=_parse_max_prefix_cache,
+        help="idle reusable KV and recurrent-state budget, e.g. 8G; 0 disables retention",
     )
     server.add_argument(
         "--max-context",

@@ -6,6 +6,7 @@
 
 - Bound retained native KV and recurrent-state prefixes with a shared default
   budget, deterministic LRU eviction, and `/status` accounting.
+- Expose `--max-prefix-cache` on `splash serve` to set or disable that budget.
 - Report the HTTP frontend process's resident size and physical footprint in
   `/status` for cache-memory attribution.
 - Add paired GSM8K exact-answer benchmarks with direct HTTP and Pi harnesses.

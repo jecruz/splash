@@ -33,6 +33,22 @@ class LauncherTests(unittest.TestCase):
         with mock.patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
             launcher.parse_args(base + ["--kv-format", "fp16"])
 
+    def test_prefix_cache_budget_is_an_explicit_load_option(self):
+        base = ["serve", "--model", MODEL_ID]
+        self.assertIsNone(launcher.parse_args(base).max_prefix_cache)
+        self.assertEqual(
+            launcher.parse_args(base + ["--max-prefix-cache", "8G"]).max_prefix_cache,
+            8 * 1024**3,
+        )
+        self.assertEqual(
+            launcher.parse_args(base + ["--max-prefix-cache", "0"]).max_prefix_cache,
+            0,
+        )
+        for value in ("-1", "auto", "bad"):
+            with self.subTest(value=value), mock.patch("sys.stderr", io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    launcher.parse_args(base + ["--max-prefix-cache", value])
+
     def test_serve_requires_exact_repository_id_before_build(self):
         for arguments in (
             ["serve"],
@@ -110,6 +126,7 @@ class LauncherTests(unittest.TestCase):
         for flag, values in (
             ("--max-context", ("0", "-1", "257K", "bad")),
             ("--max-memory", ("0", "-1G", "bad", str(2**64))),
+            ("--max-prefix-cache", ("-1", "auto", "bad", str(2**64))),
             ("--max-request-size", ("auto", "0", "-1G", "bad", str(2**64))),
         ):
             for value in values:
@@ -203,6 +220,9 @@ class LauncherTests(unittest.TestCase):
                     argv[argv.index("--max-memory") + 1], str(28 * 1024**3)
                 )
                 self.assertEqual(
+                    argv[argv.index("--max-prefix-cache") + 1], str(8 * 1024**3)
+                )
+                self.assertEqual(
                     argv[argv.index("--binary") + 1], str(launcher.paths.BINARY)
                 )
                 self.assertEqual(argv[argv.index("--model") + 1], MODEL_ID)
@@ -256,6 +276,8 @@ class LauncherTests(unittest.TestCase):
                         "100K",
                         "--max-memory",
                         "28G",
+                        "--max-prefix-cache",
+                        "8G",
                         "--allowed-host",
                         "splash.local",
                         "--allowed-host",
