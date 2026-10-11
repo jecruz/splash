@@ -26,3 +26,5 @@
 
 - Allow the architecture check's manifest-gated Qwen3.8 assembly profile while
   continuing to reject operator workspace policy elsewhere.
+- Stage release package trees in the system temporary directory and report
+  remaining entries when staging cleanup fails with `ENOTEMPTY`.

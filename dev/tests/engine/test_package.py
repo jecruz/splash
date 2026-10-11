@@ -1,3 +1,4 @@
+import errno
 import fcntl
 import hashlib
 import json
@@ -9,6 +10,8 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from contextlib import redirect_stderr
+from io import StringIO
 from pathlib import Path
 from unittest import mock
 
@@ -17,6 +20,45 @@ from install import paths
 
 
 class PackageTests(unittest.TestCase):
+    def test_package_staging_uses_private_temp_root(self):
+        with package._package_staging_directory() as staging:
+            self.assertEqual(
+                staging.parent.resolve(), Path(tempfile.gettempdir()).resolve()
+            )
+            self.assertFalse(staging.is_relative_to(package.ROOT / "dist"))
+
+    def test_nonempty_staging_cleanup_reports_entries_and_propagates(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            failing_directory = root / "python/lib"
+            failing_directory.mkdir(parents=True)
+            (failing_directory / ".DS_Store").write_bytes(b"finder metadata")
+            cleanup_error = OSError(
+                errno.ENOTEMPTY,
+                "Directory not empty",
+                str(failing_directory),
+            )
+            temporary_directory = mock.Mock(name=str(root))
+            temporary_directory.name = str(root)
+            temporary_directory.cleanup.side_effect = cleanup_error
+            stderr = StringIO()
+            with (
+                mock.patch.object(
+                    package.tempfile,
+                    "TemporaryDirectory",
+                    return_value=temporary_directory,
+                ),
+                redirect_stderr(stderr),
+                self.assertRaises(OSError) as raised,
+            ):
+                with package._package_staging_directory() as staging:
+                    self.assertEqual(staging, root)
+            self.assertIs(raised.exception, cleanup_error)
+            temporary_directory.cleanup.assert_called_once_with()
+            self.assertIn("ENOTEMPTY", stderr.getvalue())
+            self.assertIn(str(failing_directory), stderr.getvalue())
+            self.assertIn(".DS_Store", stderr.getvalue())
+
     def test_build_needs_no_hub_access_and_never_ships_credentials(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

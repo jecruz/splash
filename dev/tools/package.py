@@ -2,11 +2,15 @@
 """Build the runtime-only macOS archive and its Homebrew formula."""
 
 import argparse
+import contextlib
+import errno
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import urllib.request
@@ -143,6 +147,44 @@ end
 """
 
 
+def _report_nonempty_staging(error, temporary_root):
+    """Print the entries left in a staging directory after ENOTEMPTY."""
+    failing_path = error.filename if error.filename is not None else temporary_root
+    failing_directory = Path(os.fsdecode(failing_path))
+    try:
+        with os.scandir(failing_directory) as entries:
+            remaining = sorted(entry.name for entry in entries)
+        details = {
+            "directory": str(failing_directory),
+            "remaining_entries": remaining,
+        }
+    except OSError as diagnostic_error:
+        details = {
+            "directory": str(failing_directory),
+            "diagnostic_error": str(diagnostic_error),
+        }
+    print(
+        "package staging cleanup failed with ENOTEMPTY: "
+        + json.dumps(details, sort_keys=True),
+        file=sys.stderr,
+    )
+
+
+@contextlib.contextmanager
+def _package_staging_directory():
+    """Create private temporary staging and report, but never suppress, cleanup failures."""
+    temporary = tempfile.TemporaryDirectory(prefix="splash-package-")
+    try:
+        yield Path(temporary.name)
+    finally:
+        try:
+            temporary.cleanup()
+        except OSError as error:
+            if error.errno == errno.ENOTEMPTY:
+                _report_nonempty_staging(error, temporary.name)
+            raise
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True)
@@ -169,56 +211,77 @@ def main(argv=None):
             if digest(Path(download.name)) != PYTHON_SHA256:
                 raise ValueError("Python distribution checksum mismatch")
             shutil.copyfile(download.name, cached)
-    with tempfile.TemporaryDirectory(prefix=".package-", dir=dist) as temporary:
-        stage = Path(temporary) / name
-        stage.mkdir()
-        stage_runtime(stage, args.version)
-        with tarfile.open(cached) as python:
-            python.extractall(stage, filter="data")
-        python = stage / "python/bin/python3"
-        subprocess.run(
-            [
-                str(python),
-                "-m",
-                "pip",
-                "install",
-                "--disable-pip-version-check",
-                "--only-binary=:all:",
-                "--no-compile",
-                "-r",
-                str(stage / "install/requirements.txt"),
-            ],
-            check=True,
-        )
-        # Exercise imports and the public entry point from the actual staged
-        # runtime, not the developer's virtualenv or source PYTHONPATH.
-        subprocess.run(
-            [
-                str(python),
-                "-I",
-                "-c",
-                "import sys; sys.path.insert(0, '.'); "
-                "import tokenizers, llguidance, numpy, PIL, transformers, huggingface_hub, pypdfium2; "
-                "import server.server, install.launcher",
-            ],
-            cwd=stage,
-            check=True,
-        )
-        subprocess.run(
-            [str(python), "-B", str(stage / "install/launcher.py"), "--help"],
-            cwd=stage,
-            check=True,
-        )
-        packed = Path(temporary) / archive.name
-        with tarfile.open(packed, "w:gz") as release:
-            release.add(
-                stage,
-                arcname=name,
-                filter=lambda item: (
-                    None if "__pycache__" in Path(item.name).parts else item
-                ),
+    pending_archive = None
+    try:
+        with _package_staging_directory() as temporary:
+            stage = temporary / name
+            stage.mkdir()
+            stage_runtime(stage, args.version)
+            with tarfile.open(cached) as python:
+                python.extractall(stage, filter="data")
+            python = stage / "python/bin/python3"
+            subprocess.run(
+                [
+                    str(python),
+                    "-m",
+                    "pip",
+                    "install",
+                    "--disable-pip-version-check",
+                    "--only-binary=:all:",
+                    "--no-compile",
+                    "-r",
+                    str(stage / "install/requirements.txt"),
+                ],
+                check=True,
             )
-        packed.replace(archive)
+            # Exercise imports and the public entry point from the actual staged
+            # runtime, not the developer's virtualenv or source PYTHONPATH.
+            subprocess.run(
+                [
+                    str(python),
+                    "-I",
+                    "-c",
+                    "import sys; sys.path.insert(0, '.'); "
+                    "import tokenizers, llguidance, numpy, PIL, transformers, huggingface_hub, pypdfium2; "
+                    "import server.server, install.launcher",
+                ],
+                cwd=stage,
+                check=True,
+            )
+            subprocess.run(
+                [str(python), "-B", str(stage / "install/launcher.py"), "--help"],
+                cwd=stage,
+                check=True,
+            )
+            packed = temporary / archive.name
+            with tarfile.open(packed, "w:gz") as release:
+                release.add(
+                    stage,
+                    arcname=name,
+                    filter=lambda item: (
+                        None if "__pycache__" in Path(item.name).parts else item
+                    ),
+                )
+            with tempfile.NamedTemporaryFile(
+                prefix=f".{archive.name}.", suffix=".tmp", dir=dist, delete=False
+            ) as pending:
+                pending_archive = Path(pending.name)
+                with packed.open("rb") as source:
+                    shutil.copyfileobj(source, pending)
+                pending.flush()
+                os.fsync(pending.fileno())
+        pending_archive.replace(archive)
+    except BaseException:
+        if pending_archive is not None:
+            try:
+                pending_archive.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                print(
+                    f"could not remove incomplete package archive staging file "
+                    f"{pending_archive}: {cleanup_error}",
+                    file=sys.stderr,
+                )
+        raise
     checksum = digest(archive)
     archive.with_suffix(archive.suffix + ".sha256").write_text(checksum + "\n")
     url = (
