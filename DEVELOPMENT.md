@@ -399,6 +399,8 @@ stop other GPU workloads, and report chip/GPU cores, memory, Splash version,
 model revision, actual input/output token counts, and cache hits with results.
 Keep cold prefill, cached TTFT and sustained decode separate; a UI token rate
 alone does not measure end-to-end agent performance.
+Pass `--max-prefix-cache 8G` to pin the same explicit prefix-cache budget on
+both isolated binaries; when omitted, the server's default budget applies.
 
 For a before/after task-quality comparison, use the same binary and package
 arguments with `dev.benchmarks.quality_regression`. It scores exact numeric

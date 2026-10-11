@@ -50,6 +50,7 @@ class SmokeRealTests(unittest.TestCase):
                         model="test-model",
                         max_context=None,
                         max_memory=None,
+                        max_prefix_cache="8G" if absolute else None,
                         kv_format="bf16" if absolute else "int8",
                     )
                     with (
@@ -83,6 +84,13 @@ class SmokeRealTests(unittest.TestCase):
                                 command[command.index("--binary") + 1],
                                 str(binary.resolve()),
                             )
+                            if absolute:
+                                self.assertEqual(
+                                    command[command.index("--max-prefix-cache") + 1],
+                                    "8G",
+                                )
+                            else:
+                                self.assertNotIn("--max-prefix-cache", command)
                         finally:
                             server.close()
 
