@@ -427,7 +427,9 @@ def run_version(
                 f"{version} Qwen3.8 M3 Ultra base profile was not installed",
             )
         elif PROFILE_LOG_LINE in startup_log:
-            raise smoke.SmokeFailure("unexpected Qwen3.8 M3 Ultra base profile activation")
+            raise smoke.SmokeFailure(
+                "unexpected Qwen3.8 M3 Ultra base profile activation"
+            )
         if expect_prefill_profile:
             smoke.require(
                 PREFILL_PROFILE_LOG_LINE in startup_log,

@@ -3049,9 +3049,7 @@ class ServerTest(unittest.TestCase):
             api.parse_args([*required, "--max-prefix-cache", "0"]).max_prefix_cache,
             0,
         )
-        capped_args = api.parse_args(
-            [*required, "--max-prefix-cache", "512M"]
-        )
+        capped_args = api.parse_args([*required, "--max-prefix-cache", "512M"])
         self.assertEqual(
             api._native_command(capped_args)[-2:],
             ["--max-prefix-cache", str(512 * 1024**2)],
