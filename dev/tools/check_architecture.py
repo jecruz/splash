@@ -23,6 +23,17 @@ OPERATOR_WORKSPACE_POLICY = re.compile(
     r"MoeExpertSimdgroups|MoeConfig|"
     r"DraftAttentionConfiguration|selectorShards)\b"
 )
+QWEN38_PROFILE = re.compile(
+    r"\bops::OperatorChoices\s+m3UltraQwen38Profile\s*\([^)]*\)\s*\{"
+)
+QWEN38_PROFILE_GUARD = re.compile(
+    r"\bif\s*\(\s*device\.appleGpuFamily\s*!=\s*9\s*\|\|\s*"
+    r"device\.gpuCoreCount\s*!=\s*60\s*\|\|\s*"
+    r'package\.name\(\)\s*!=\s*"Qwen3\.8-27B"\s*\|\|\s*'
+    r"digestHex\(package\.descriptor\.packageManifestSha256\)\s*!=\s*"
+    r"manifestSha256\s*\)\s*return\s*\{\s*\}\s*;",
+    re.DOTALL,
+)
 
 
 def production_sources() -> list[Path]:
@@ -35,6 +46,35 @@ def production_sources() -> list[Path]:
 
 def relative(path: Path) -> str:
     return path.relative_to(ROOT).as_posix()
+
+
+def guarded_runtime_policy(name: str, text: str) -> tuple[str, str | None]:
+    """Remove the one manifest-gated runtime profile before policy scanning."""
+    if name != "runtime/engine/RuntimeResources.mm":
+        return text, None
+
+    matches = list(QWEN38_PROFILE.finditer(text))
+    if not matches:
+        return text, None
+    if len(matches) != 1:
+        return text, "runtime profile must have exactly one Qwen3.8 definition"
+
+    match = matches[0]
+    depth = 1
+    end = match.end()
+    while end < len(text) and depth:
+        if text[end] == "{":
+            depth += 1
+        elif text[end] == "}":
+            depth -= 1
+        end += 1
+    if depth:
+        return text, "runtime Qwen3.8 profile has an incomplete body"
+
+    body = text[match.end():end]
+    if not QWEN38_PROFILE_GUARD.search(body):
+        return text, "runtime Qwen3.8 profile is missing a required selector guard"
+    return text[:match.start()] + text[end:], None
 
 
 def check_server_dependencies() -> list[str]:
@@ -120,7 +160,10 @@ def check() -> list[str]:
             if re.search(r"\b(?:graph|commandGraph)\.add\s*\(", text):
                 errors.append(f"{name}: model dispatches a Metal pipeline directly")
         if name.startswith(("runtime/model/", "runtime/engine/")):
-            if OPERATOR_WORKSPACE_POLICY.search(text):
+            policy_text, profile_error = guarded_runtime_policy(name, text)
+            if profile_error:
+                errors.append(f"{name}: {profile_error}")
+            elif OPERATOR_WORKSPACE_POLICY.search(policy_text):
                 layer = name.split("/")[1]
                 errors.append(f"{name}: {layer} owns an operator workspace policy")
         if name.startswith("runtime/ops/"):

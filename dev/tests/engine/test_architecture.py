@@ -106,6 +106,51 @@ class ArchitectureTests(unittest.TestCase):
                             )
                     source.unlink()
 
+    def test_manifest_gated_qwen38_profile_is_allowed_only_at_assembly(self):
+        profile = '''ops::OperatorChoices m3UltraQwen38Profile(
+    const DeviceCapabilities &device,
+    const model::ModelPackage &package) {
+  constexpr std::string_view manifestSha256 = "approved-manifest";
+  if (device.appleGpuFamily != 9 || device.gpuCoreCount != 60 ||
+      package.name() != "Qwen3.8-27B" ||
+      digestHex(package.descriptor.packageManifestSha256) != manifestSha256)
+    return {};
+  return ops::OperatorChoices{
+      .linear = {ops::LinearConfig{ops::LinearTile::N128}},
+      .prefillAttention = {ops::PrefillAttentionConfig{
+          ops::PrefillSplitMultiplier::Two}},
+  };
+}
+'''
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            assembly = root / "runtime/engine/RuntimeResources.mm"
+            assembly.parent.mkdir(parents=True)
+            with mock.patch.object(check_architecture, "ROOT", root):
+                assembly.write_text(profile)
+                self.assertEqual(check_architecture.check(), [])
+
+                ungated = profile.replace("device.gpuCoreCount != 60 ||\n      ", "")
+                assembly.write_text(ungated)
+                self.assertEqual(
+                    check_architecture.check(),
+                    [
+                        "runtime/engine/RuntimeResources.mm: runtime Qwen3.8 "
+                        "profile is missing a required selector guard"
+                    ],
+                )
+
+                scheduler = root / "runtime/engine/Scheduler.cpp"
+                scheduler.write_text("auto tile = ops::LinearTile::N128;")
+                assembly.write_text(profile)
+                self.assertEqual(
+                    check_architecture.check(),
+                    [
+                        "runtime/engine/Scheduler.cpp: engine owns an operator "
+                        "workspace policy"
+                    ],
+                )
+
     def test_production_cannot_include_offline_tuning(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

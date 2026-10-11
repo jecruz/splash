@@ -21,3 +21,8 @@
   package manifest.
 - Apply the measured two-way Q8 prefill attention split only to the exact
   Qwen3.8-27B M3 Ultra package profile.
+
+### Fixed
+
+- Allow the architecture check's manifest-gated Qwen3.8 assembly profile while
+  continuing to reject operator workspace policy elsewhere.
