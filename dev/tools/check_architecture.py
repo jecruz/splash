@@ -77,6 +77,21 @@ def _skip_raw_string(text: str, start: int) -> int | None:
     return closing + len(delimiter) + 2
 
 
+def _is_numeric_digit_separator(text: str, index: int) -> bool:
+    """Recognize digit separators so they are not parsed as character literals."""
+    if index == 0 or index + 1 >= len(text):
+        return False
+    previous, following = text[index - 1], text[index + 1]
+    if previous.isdigit() and following.isdigit():
+        return True
+    if previous.lower() not in "abcdef" or following.lower() not in "abcdef0123456789":
+        return False
+    token_start = index - 1
+    while token_start > 0 and (text[token_start - 1].isalnum() or text[token_start - 1] == "_"):
+        token_start -= 1
+    return text[token_start : token_start + 2].lower() == "0x"
+
+
 def _after_line_splices(text: str, index: int) -> int:
     """Skip C++ backslash-newline pairs beginning at index."""
     while text.startswith("\\\r\n", index) or text.startswith("\\\n", index):
@@ -84,52 +99,103 @@ def _after_line_splices(text: str, index: int) -> int:
     return index
 
 
+def _skip_cpp_non_code(text: str, index: int) -> int | None:
+    """Return the end of a C++ comment or literal starting at index."""
+    after_slash = _after_line_splices(text, index + 1) if text[index] == "/" else index
+    if text[index] == "/" and after_slash < len(text) and text[after_slash] == "/":
+        index = after_slash + 1
+        while index < len(text):
+            spliced = _after_line_splices(text, index)
+            if spliced != index:
+                index = spliced
+                continue
+            if text.startswith("\r\n", index):
+                return index + 2
+            if text[index] in "\r\n":
+                return index + 1
+            index += 1
+        return index
+    if text[index] == "/" and after_slash < len(text) and text[after_slash] == "*":
+        index = after_slash + 1
+        while index < len(text):
+            if text[index] == "*":
+                after_star = _after_line_splices(text, index + 1)
+                if after_star < len(text) and text[after_star] == "/":
+                    return after_star + 1
+            index += 1
+        return None
+    raw_end = _skip_raw_string(text, index)
+    if raw_end is not None:
+        return raw_end
+    if text[index] == "'" and _is_numeric_digit_separator(text, index):
+        return None
+    if text[index] in ('"', "'"):
+        return _skip_quoted_literal(text, index, text[index])
+    return None
+
+
+def _mask_cpp_non_code(text: str, mask_literals: bool = True) -> str:
+    """Blank C++ comments and optionally literals while preserving offsets."""
+    masked = list(text)
+    index = 0
+    while index < len(text):
+        end = _skip_cpp_non_code(text, index)
+        if end is None:
+            index += 1
+            continue
+        is_literal = text[index] in ('"', "'") or _skip_raw_string(text, index) is not None
+        if not is_literal or mask_literals:
+            for offset in range(index, end):
+                if masked[offset] not in "\r\n":
+                    masked[offset] = " "
+        index = end
+    return "".join(masked)
+
+
+def _mask_inactive_if_zero(text: str) -> str:
+    """Blank literal #if 0 branches so decoy profiles cannot be selected."""
+    masked = list(text)
+    stack: list[tuple[bool, bool, bool]] = []
+    inactive = False
+    line_start = 0
+    for line in text.splitlines(keepends=True):
+        content_end = line_start + len(line.rstrip("\r\n"))
+        directive = re.match(r"^\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b(.*)", line[: content_end - line_start])
+        if directive:
+            kind, condition = directive.groups()
+            if kind == "if":
+                zero_branch = condition.strip() == "0"
+                stack.append((inactive, zero_branch, False))
+                inactive = inactive or zero_branch
+            elif kind in {"ifdef", "ifndef"}:
+                stack.append((inactive, False, False))
+            elif kind == "else" and stack:
+                parent_inactive, zero_branch, _ = stack[-1]
+                stack[-1] = (parent_inactive, zero_branch, True)
+                inactive = parent_inactive
+            elif kind == "elif" and stack:
+                parent_inactive, _, _ = stack[-1]
+                stack[-1] = (parent_inactive, False, False)
+                inactive = parent_inactive
+            elif kind == "endif" and stack:
+                parent_inactive, _, _ = stack.pop()
+                inactive = parent_inactive
+        elif inactive:
+            for offset in range(line_start, line_start + len(line)):
+                if masked[offset] not in "\r\n":
+                    masked[offset] = " "
+        line_start += len(line)
+    return "".join(masked)
+
+
 def _matching_brace_end(text: str, opening: int) -> int | None:
     """Find a matching C++ brace while ignoring comments and string literals."""
     depth = 1
     index = opening + 1
     while index < len(text):
-        after_slash = _after_line_splices(text, index + 1) if text[index] == "/" else index
-        if text[index] == "/" and after_slash < len(text) and text[after_slash] == "/":
-            index = after_slash + 1
-            while index < len(text):
-                spliced = _after_line_splices(text, index)
-                if spliced != index:
-                    index = spliced
-                    continue
-                if text.startswith("\r\n", index):
-                    index += 2
-                    break
-                if text[index] in "\r\n":
-                    index += 1
-                    break
-                index += 1
-            continue
-        if text[index] == "/" and after_slash < len(text) and text[after_slash] == "*":
-            index = after_slash + 1
-            while index < len(text):
-                if text[index] == "*":
-                    after_star = _after_line_splices(text, index + 1)
-                    if after_star < len(text) and text[after_star] == "/":
-                        index = after_star + 1
-                        break
-                index += 1
-            else:
-                return None
-            continue
-        spliced = _after_line_splices(text, index)
-        if spliced != index:
-            index = spliced
-            continue
-        raw_end = _skip_raw_string(text, index)
-        if raw_end is not None:
-            index = raw_end
-            continue
-        if text[index] in ('"', "'"):
-            literal_end = _skip_quoted_literal(text, index, text[index])
-            if literal_end is None:
-                return None
-            index = literal_end
+        end = _skip_cpp_non_code(text, index)
+        if end is not None:
+            index = end
             continue
         if text[index] == "{":
             depth += 1
@@ -158,7 +224,8 @@ def guarded_runtime_policy(name: str, text: str) -> tuple[str, str | None]:
     if name != "runtime/engine/RuntimeResources.mm":
         return text, None
 
-    matches = list(QWEN38_PROFILE.finditer(text))
+    signature_view = _mask_inactive_if_zero(_mask_cpp_non_code(text))
+    matches = list(QWEN38_PROFILE.finditer(signature_view))
     if not matches:
         return text, None
     if len(matches) != 1:
@@ -169,7 +236,8 @@ def guarded_runtime_policy(name: str, text: str) -> tuple[str, str | None]:
     if end is None:
         return text, "runtime Qwen3.8 profile has an incomplete body"
 
-    body = text[match.end() : end]
+    body = _mask_cpp_non_code(text[match.end() : end], mask_literals=False)
+    body = _mask_inactive_if_zero(body)
     if not QWEN38_PROFILE_GUARD.match(body):
         return text, "runtime Qwen3.8 profile is missing a required selector guard"
     return text[:match.start()] + text[end:], None

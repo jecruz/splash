@@ -170,7 +170,16 @@ class ArchitectureTests(unittest.TestCase):
                 )
 
     def test_profile_scanner_ignores_braces_in_comments_and_literals(self):
-        prefix = "// preceding source\n"
+        prefix = '''constexpr auto grouped = 1'000;
+constexpr auto groupedHex = 0xA'B;
+// ops::OperatorChoices m3UltraQwen38Profile() { }
+/* ops::OperatorChoices m3UltraQwen38Profile() { } */
+const char *decoy = "ops::OperatorChoices m3UltraQwen38Profile() { }";
+#if 0
+ops::OperatorChoices m3UltraQwen38Profile() { return {}; }
+#endif
+// preceding source
+'''
         profile = '''ops::OperatorChoices m3UltraQwen38Profile(
     const DeviceCapabilities &device,
     const model::ModelPackage &package) {
