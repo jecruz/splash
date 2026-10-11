@@ -95,6 +95,7 @@ public:
 
   [[nodiscard]] Chain chain(uint64_t blockId) const;
   [[nodiscard]] bool contains(uint64_t blockId) const noexcept;
+  [[nodiscard]] bool hasActiveUsers(uint64_t blockId) const noexcept;
   [[nodiscard]] uint32_t chainLength(uint64_t blockId) const;
   [[nodiscard]] uint64_t generation() const noexcept { return generation_; }
 

@@ -65,6 +65,7 @@ makeRuntimeCacheIdentity(std::string_view combinedManifestSha256,
 
 struct RuntimeResourcesConfig {
   kv::Format kvFormat = kv::Format::Int8;
+  uint64_t maximumPrefixCacheBytes = kDefaultPrefixCacheLimitBytes;
   std::filesystem::path metallibPath;
   std::filesystem::path modelRoot;
   model::ModelDescriptor model;

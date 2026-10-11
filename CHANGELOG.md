@@ -4,6 +4,8 @@
 
 ### Added
 
+- Bound retained native KV and recurrent-state prefixes with a shared default
+  budget, deterministic LRU eviction, and `/status` accounting.
 - Add paired GSM8K exact-answer benchmarks with direct HTTP and Pi harnesses.
 - Allow the attention sweep to compare existing prefill attention configurations
   in rotating order, preserve individual timing samples, and report output

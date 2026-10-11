@@ -1820,6 +1820,12 @@ def _parse_max_memory(value):
     return result
 
 
+def _parse_max_prefix_cache(value):
+    if value.strip() == "0":
+        return 0
+    return _parse_max_memory(value)
+
+
 def _parse_request_size(value):
     size = _parse_max_memory(value)
     if size is None:
@@ -1862,6 +1868,12 @@ def parse_args(argv=None):
     )
     parser.add_argument("--max-context", type=_parse_max_context, default=None)
     parser.add_argument("--max-memory", type=_parse_max_memory, default=None)
+    parser.add_argument(
+        "--max-prefix-cache",
+        type=_parse_max_prefix_cache,
+        default=None,
+        help="idle reusable KV+state cache budget (default: 8G; 0 disables retention)",
+    )
     parser.add_argument(
         "--kv-format",
         choices=("int8", "bf16"),
@@ -1925,6 +1937,8 @@ def _native_command(args):
     ]
     if args.kv_format != "int8":
         command.extend(("--kv-format", args.kv_format))
+    if args.max_prefix_cache is not None:
+        command.extend(("--max-prefix-cache", str(args.max_prefix_cache)))
     return command
 
 

@@ -164,13 +164,19 @@ uint64_t StateCache::resumePoint() const noexcept {
 }
 
 std::optional<CacheEvictionCandidate>
-StateCache::evictionCandidate(bool keepResumePoint) const noexcept {
+StateCache::evictionCandidate(bool keepResumePoint,
+                              bool protectActiveKv) const noexcept {
   // Withholding the resume point must not also spare the publications behind
   // it: a speculative pass still sheds everything else it would have taken.
   const uint64_t kept = keepResumePoint ? resumePoint() : 0;
-  for (uint64_t oldest : {checkpointEviction_.oldest, ordinaryEviction_.oldest}) {
-    if (oldest && oldest != kept)
-      return CacheEvictionCandidate{oldest, entries_.at(oldest).lastUsed};
+  for (uint64_t first : {checkpointEviction_.oldest, ordinaryEviction_.oldest}) {
+    for (uint64_t candidate = first; candidate;
+         candidate = entries_.at(candidate).nextEvictable) {
+      if (candidate != kept &&
+          (!protectActiveKv || !kv_.hasActiveUsers(candidate)))
+        return CacheEvictionCandidate{candidate,
+                                      entries_.at(candidate).lastUsed};
+    }
   }
   return std::nullopt;
 }

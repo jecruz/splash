@@ -212,6 +212,11 @@ bool KvCache::contains(uint64_t blockId) const noexcept {
   return blocks_.contains(blockId);
 }
 
+bool KvCache::hasActiveUsers(uint64_t blockId) const noexcept {
+  const auto found = blocks_.find(blockId);
+  return found != blocks_.end() && found->second.activeUsers != 0;
+}
+
 uint32_t KvCache::chainLength(uint64_t blockId) const {
   return block(blockId).depth;
 }

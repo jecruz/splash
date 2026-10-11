@@ -527,8 +527,9 @@ RuntimeResources::create(const RuntimeResourcesConfig &config) {
       throw std::runtime_error("model factory returned no state storage");
     }
     auto kvPool = std::make_unique<KvPool>(*kvPages);
-    auto cache =
-        std::make_unique<engine::Cache>(*kvPool, cacheIdentity.cacheNamespace);
+    auto cache = std::make_unique<engine::Cache>(
+        *kvPool, cacheIdentity.cacheNamespace,
+        config.maximumPrefixCacheBytes);
 
     if (kvPages->declaredBytes() != budget.kvVirtualBytes ||
         kvPages->actualAllocatedBytes() > budget.kvVirtualBytes) {

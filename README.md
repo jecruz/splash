@@ -102,6 +102,9 @@ that a long uncached prompt will reach its first token quickly.
 - `--port`: HTTP port. Defaults to `SPLASH_PORT` or `8000`.
 - `--max-memory`: ceiling on Metal allocations, e.g. `28G`. Default: auto.
 - `--max-context`: context limit, up to `256K`, e.g. `100K`. Default: auto.
+- `--max-prefix-cache`: logical idle reusable KV plus recurrent-state cache
+  budget, e.g. `8G`. The same 8 GiB default applies to every model; `0`
+  disables retention after requests complete.
 - `--kv-format`: target KV cache storage, `int8` (default) or `bf16`.
 - `--max-image-pixels`: maximum resized pixels per image. Default: 4,194,304.
 - `--allowed-host`: extra HTTP `Host` name to accept, not a bind address. Repeatable.
@@ -122,6 +125,17 @@ Restart the server to switch formats. Omit `--kv-format` or use
 
 If the model does not fit in the memory available, startup prints a memory
 budget breakdown and stops.
+
+The prefix-cache limit is enforced after each request completes. When retained
+KV and recurrent-state entries exceed the limit, Splash evicts disposable
+checkpoints first, then the least-recently-used eligible state or state-free KV
+leaf. Exact token-page and image identities are unchanged. Active requests and
+pinned recurrent states are never evicted, so their bytes can temporarily put
+the logical cache above the configured limit; `/status` reports that overage.
+The limit measures logical reusable cache ownership, not Metal allocator
+backing or process memory. KV pool backing, recurrent-state residency, and Metal
+current/peak allocation are reported separately because eviction may make
+backing reusable without immediately returning it to the operating system.
 
 Authentication is off by default. Set `SPLASH_API_KEY` in the shell that runs
 `splash serve` and in the shell that runs an agent, and both sides use it.

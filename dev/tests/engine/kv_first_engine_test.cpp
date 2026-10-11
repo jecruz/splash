@@ -2799,6 +2799,52 @@ void testPrefillCanCompleteTheRequest() {
   }
 }
 
+void testOversizedRequestCompletesOnceAndIsNotRetained() {
+  Backing backing(8);
+  KvPool pool(backing);
+  engine::Cache resources(pool, CacheNamespace{}, 1);
+  Executor executor(1);
+  Events events;
+  engine::Engine engine({}, resources, executor, events);
+
+  engine.submit(request(91, std::vector<uint32_t>(96, 91)));
+  runUntilIdle(engine);
+
+  const CacheSnapshot cache = resources.snapshot();
+  require(events.completedCount == 1 && events.emitted == 1 &&
+              events.failedCount == 0,
+          "request larger than prefix limit did not complete correctly");
+  require(cache.prefixLimit.limitBytes == 1 &&
+              cache.prefixLimit.logicalBytes == 0 &&
+              cache.prefixLimit.overLimitBytes == 0 &&
+              cache.prefixLimit.evictions > 0 && cache.kvCache.blocks == 0 &&
+              cache.stateCache.entries == 0,
+          "oversized request was retained or reprocessed after completion");
+}
+
+void testRequestLargerThanPrefixLimitCompletesWithoutRetention() {
+  Backing backing(8);
+  KvPool pool(backing);
+  engine::Cache resources(pool, CacheNamespace{}, 1);
+  Executor executor(1);
+  Events events;
+  engine::Engine engine({}, resources, executor, events);
+
+  engine.submit(request(91, std::vector<uint32_t>(96, 91)));
+  runUntilIdle(engine);
+
+  const CacheSnapshot cache = resources.snapshot();
+  require(events.completedCount == 1 && events.emitted == 1 &&
+              events.failedCount == 0,
+          "request larger than prefix limit did not complete correctly");
+  require(cache.prefixLimit.limitBytes == 1 &&
+              cache.prefixLimit.logicalBytes == 0 &&
+              cache.prefixLimit.overLimitBytes == 0 &&
+              cache.prefixLimit.evictions > 0 && cache.kvCache.blocks == 0 &&
+              cache.stateCache.entries == 0,
+          "oversized request was retained or repeatedly reprocessed after completion");
+}
+
 const uint32_t defaultCheckpointTokens = EngineConfig{}.prefillCheckpointTokens;
 
 void runUntilCheckpoint(engine::Engine &engine, uint64_t publications) {
@@ -3393,6 +3439,8 @@ int main() {
     testStalledSuspensionFailsWithCapacity();
     testTerminalAnchorWithoutKvIsNotCached();
     testPrefillCanCompleteTheRequest();
+    testOversizedRequestCompletesOnceAndIsNotRetained();
+    testRequestLargerThanPrefixLimitCompletesWithoutRetention();
     std::cout << "KV-first engine tests passed\n";
     return EXIT_SUCCESS;
   } catch (const std::exception &error) {

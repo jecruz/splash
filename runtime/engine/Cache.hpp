@@ -52,12 +52,25 @@ struct CacheLookupSnapshot final {
   uint64_t lazyJunctions = 0;
 };
 
+inline constexpr uint64_t kDefaultPrefixCacheLimitBytes = 8ULL * 1024 * 1024 * 1024;
+
+struct PrefixCacheLimitSnapshot final {
+  uint64_t limitBytes = kDefaultPrefixCacheLimitBytes;
+  uint64_t logicalBytes = 0;
+  uint64_t overLimitBytes = 0;
+  uint64_t evictions = 0;
+  uint64_t evictedBytes = 0;
+  uint64_t evictedKvBytes = 0;
+  uint64_t evictedStateBytes = 0;
+};
+
 struct CacheSnapshot final {
   KvPoolSnapshot pool;
   KvCache::Snapshot kvCache;
   StateCacheSnapshot stateCache;
   CacheLookupSnapshot lookup;
   uint32_t activeRequests = 0;
+  PrefixCacheLimitSnapshot prefixLimit;
 };
 
 struct TokenAdmission final {
@@ -87,7 +100,8 @@ enum class CacheReclaimMode { ReuseBacking, ReleaseBacking };
 // composite states. Physical recurrent-state cells remain model-owned.
 class Cache final {
 public:
-  Cache(KvPool &pool, CacheNamespace cacheNamespace);
+  Cache(KvPool &pool, CacheNamespace cacheNamespace,
+        uint64_t prefixCacheLimitBytes = kDefaultPrefixCacheLimitBytes);
   Cache(const Cache &) = delete;
   Cache &operator=(const Cache &) = delete;
 
@@ -149,7 +163,7 @@ public:
   // page reusable without immediately emptying its extent.
   [[nodiscard]] CacheReclaimResult reclaimOne(
       CacheReclaimMode mode = CacheReclaimMode::ReleaseBacking,
-      bool keepResumePoint = false);
+      bool keepResumePoint = false, bool protectActiveRequests = false);
   // Recycles an unpinned state, preferring checkpoints, for a required state
   // publication. KV bytes only return once an extent unmaps.
   [[nodiscard]] bool reclaimOneState(bool checkpointsOnly = false);
@@ -159,6 +173,9 @@ public:
   // Includes the last unmap, even when no empty extent remains to reclaim.
   [[nodiscard]] bool releasePending() const noexcept;
   [[nodiscard]] uint64_t releaseGeneration() const noexcept;
+  // Evicts idle reusable KV/state entries until within the configured budget.
+  // Active requests and pinned recurrent states remain protected.
+  [[nodiscard]] uint64_t enforcePrefixLimit();
   // Startup cleanup only: unmap unused backing without evicting cache data,
   // keeping one runway extent. Waits for each paced release.
   void releaseUnusedKvBacking();
@@ -189,6 +206,7 @@ private:
   StateCache states_;
   std::unordered_map<uint64_t, Request> requests_;
   CacheLookupSnapshot lookup_;
+  PrefixCacheLimitSnapshot prefixLimit_;
 };
 
 } // namespace splash::engine

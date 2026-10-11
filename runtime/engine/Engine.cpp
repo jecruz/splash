@@ -483,7 +483,7 @@ bool Engine::admit(Request &active, double now) {
         // The host continuation survives this failed admission. No recurrent
         // state restore or replay has run, and all temporary leases are freed.
         model_.suspend(active.request.id);
-        cache_.endRequest(active.request.id);
+        endCacheRequest(active.request.id);
         active.stateCell.reset();
         executorStarted = resourcesStarted = false;
         if (!growthPaused() && !retryableBudget &&
@@ -547,7 +547,7 @@ bool Engine::admit(Request &active, double now) {
     if (executorStarted)
       model_.end(active.request.id);
     if (resourcesStarted)
-      cache_.endRequest(active.request.id);
+      endCacheRequest(active.request.id);
     active.stateCell.reset();
     throw;
   }
@@ -936,6 +936,22 @@ bool Engine::reclaimIdleState() noexcept {
   return true;
 }
 
+void Engine::endCacheRequest(uint64_t requestId) {
+  const uint64_t evictedBefore =
+      cache_.snapshot().prefixLimit.evictedStateBytes;
+  cache_.endRequest(requestId);
+  uint64_t stateBytesToRelease =
+      cache_.snapshot().prefixLimit.evictedStateBytes - evictedBefore;
+  while (stateBytesToRelease) {
+    const uint64_t released = model_.reclaimIdleState();
+    if (!released)
+      break;
+    stateBytesToRelease = released >= stateBytesToRelease
+                              ? 0
+                              : stateBytesToRelease - released;
+  }
+}
+
 // Host pressure pauses growth, and the pressure controller owns physical
 // shrink. Backing that stays resident is outside that accounting: a request
 // short of pages may take idle cached pages instead of being suspended and
@@ -972,7 +988,7 @@ void Engine::suspendForGrowth(Request &active, uint64_t workEnd, double now) {
     scheduler_.setPrefillBoundary(active.request.id, std::nullopt);
   }
   model_.suspend(active.request.id);
-  cache_.endRequest(active.request.id);
+  endCacheRequest(active.request.id);
   active.stateCell.reset();
   active.suspended = true;
   active.resumeKvTargetTokens = workEnd;
@@ -1201,7 +1217,7 @@ void Engine::release(Request &active) {
   if (active.stateCell || active.suspended) {
     discardPendingStateBoundaries(active);
     model_.end(active.request.id);
-    cache_.endRequest(active.request.id);
+    endCacheRequest(active.request.id);
     active.stateCell.reset();
     active.suspended = false;
     signalResourceProgress();

@@ -55,6 +55,7 @@ struct NativeArguments final {
   model::ModelDescriptor model;
   uint32_t maxContext = 0;
   uint64_t maxMemoryBytes = 0;
+  uint64_t maxPrefixCacheBytes = engine::kDefaultPrefixCacheLimitBytes;
   kv::Format kvFormat = kv::Format::Int8;
 };
 
@@ -125,7 +126,8 @@ private:
 void printUsage(std::string_view executable) {
   std::cerr << "usage: " << executable
             << " serve-native TARGET_DIRECTORY DRAFT_DIRECTORY"
-               " MAX_CONTEXT|auto MAX_MEMORY_BYTES|auto [--kv-format int8|bf16]\n";
+               " MAX_CONTEXT|auto MAX_MEMORY_BYTES|auto"
+               " [--kv-format int8|bf16] [--max-prefix-cache BYTES]\n";
 }
 
 template <typename T>
@@ -135,12 +137,26 @@ bool parsePositive(std::string_view value, T &result) {
   return parsed.ec == std::errc{} && parsed.ptr == end && result != 0;
 }
 
+template <typename T>
+bool parseUnsigned(std::string_view value, T &result) {
+  const char *end = value.data() + value.size();
+  auto parsed = std::from_chars(value.data(), end, result);
+  return !value.empty() && parsed.ec == std::errc{} && parsed.ptr == end;
+}
+
 uint64_t parseMaxMemory(std::string_view value) {
   if (value == "auto")
     return 0;
   uint64_t result = 0;
   if (!parsePositive(value, result))
     throw UsageError("MAX_MEMORY_BYTES must be auto or a positive integer");
+  return result;
+}
+
+uint64_t parsePrefixCacheLimit(std::string_view value) {
+  uint64_t result = 0;
+  if (!parseUnsigned(value, result))
+    throw UsageError("--max-prefix-cache requires a non-negative byte count");
   return result;
 }
 
@@ -184,16 +200,28 @@ std::filesystem::path requireModelRoot(std::string_view targetArgument,
 }
 
 NativeArguments parseArguments(int argc, char **argv) {
-  if ((argc != 6 && argc != 8) || std::string_view(argv[1]) != "serve-native") {
+  if (argc < 6 || argc > 10 || (argc - 6) % 2 ||
+      std::string_view(argv[1]) != "serve-native") {
     throw UsageError("expected the serve-native command");
   }
   NativeArguments result;
-  if (argc == 8) {
-    const std::string_view format(argv[7]);
-    if (std::string_view(argv[6]) != "--kv-format" ||
-        (format != "int8" && format != "bf16"))
-      throw UsageError("--kv-format requires int8 or bf16");
-    result.kvFormat = format == "int8" ? kv::Format::Int8 : kv::Format::BFloat16;
+  bool sawKvFormat = false;
+  bool sawPrefixLimit = false;
+  for (int index = 6; index < argc; index += 2) {
+    const std::string_view option(argv[index]);
+    const std::string_view value(argv[index + 1]);
+    if (option == "--kv-format" && !sawKvFormat) {
+      if (value != "int8" && value != "bf16")
+        throw UsageError("--kv-format requires int8 or bf16");
+      result.kvFormat = value == "int8" ? kv::Format::Int8 : kv::Format::BFloat16;
+      sawKvFormat = true;
+    } else if (option == "--max-prefix-cache" && !sawPrefixLimit) {
+      result.maxPrefixCacheBytes = parsePrefixCacheLimit(value);
+      sawPrefixLimit = true;
+    } else {
+      throw UsageError("unknown or duplicate serve-native option: " +
+                       std::string(option));
+    }
   }
   result.modelRoot = requireModelRoot(argv[2], argv[3]);
   result.model = model::inspectModelPackage(result.modelRoot);
@@ -240,6 +268,7 @@ bootstrapConfig(const NativeArguments &arguments) {
   config.resources.model = arguments.model;
   config.resources.buildId = SPLASH_BUILD_ID;
   config.resources.maximumMemoryBytes = arguments.maxMemoryBytes;
+  config.resources.maximumPrefixCacheBytes = arguments.maxPrefixCacheBytes;
   config.resources.kvFormat = arguments.kvFormat;
   config.resources.maximumImagePatches = kMaximumImagePatches;
   config.nativeLoop.engine.maxContext = arguments.maxContext;

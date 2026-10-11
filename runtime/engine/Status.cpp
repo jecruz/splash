@@ -179,6 +179,15 @@ std::string runtimeStatusJson(
       << ",\"checkpoint_bytes\":" << state.checkpointBytes
       << ",\"checkpoint_evictions\":" << state.checkpointEvictions
       << ",\"checkpoint_retirements\":" << state.checkpointRetirements << "}"
+      << ",\"prefix_cache\":{\"limit_bytes\":"
+      << resources.prefixLimit.limitBytes
+      << ",\"logical_bytes\":" << resources.prefixLimit.logicalBytes
+      << ",\"over_limit_bytes\":" << resources.prefixLimit.overLimitBytes
+      << ",\"evictions\":" << resources.prefixLimit.evictions
+      << ",\"evicted_bytes\":" << resources.prefixLimit.evictedBytes
+      << ",\"evicted_kv_bytes\":" << resources.prefixLimit.evictedKvBytes
+      << ",\"evicted_state_bytes\":" << resources.prefixLimit.evictedStateBytes
+      << ",\"semantics\":\"completed reusable KV plus recurrent-state entries; active/pinned entries may temporarily exceed the limit\"}"
       << ",\"cache\":{\"lookups\":" << lookup.lookups
       << ",\"hits\":" << core.cacheHits
       << ",\"cold_misses\":" << core.coldMisses << ",\"hit_rate\":" << hitRate

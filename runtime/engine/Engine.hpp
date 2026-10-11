@@ -178,6 +178,7 @@ private:
   [[nodiscard]] bool reclaimForGrowth(
       CacheReclaimMode mode = CacheReclaimMode::ReleaseBacking);
   [[nodiscard]] bool reclaimIdleState() noexcept;
+  void endCacheRequest(uint64_t requestId);
   [[nodiscard]] bool reuseIdleBackingWhilePaused(const TokenAdmission &admission);
   [[nodiscard]] bool growthPaused() const;
   struct KvAdmission {

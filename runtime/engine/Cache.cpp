@@ -7,8 +7,10 @@
 
 namespace splash::engine {
 
-Cache::Cache(KvPool &pool, CacheNamespace cacheNamespace)
+Cache::Cache(KvPool &pool, CacheNamespace cacheNamespace,
+             uint64_t prefixCacheLimitBytes)
     : pool_(pool), kv_(pool, cacheNamespace, recency_), states_(kv_, recency_) {
+  prefixLimit_.limitBytes = prefixCacheLimitBytes;
 }
 
 void Cache::beginRequest(uint64_t requestId) {
@@ -33,6 +35,7 @@ void Cache::endRequest(uint64_t requestId) {
   for (uint64_t block : active.cachedBlocks)
     states_.touch(block);
   requests_.erase(found);
+  static_cast<void>(enforcePrefixLimit());
 }
 
 std::vector<uint64_t>
@@ -302,7 +305,8 @@ uint64_t Cache::reclaimCache(uint64_t targetBytes, bool evictAll,
 }
 
 CacheReclaimResult Cache::reclaimOne(CacheReclaimMode mode,
-                                     bool keepResumePoint) {
+                                     bool keepResumePoint,
+                                     bool protectActiveRequests) {
   if (mode == CacheReclaimMode::ReleaseBacking) {
     if (releaseDeferred())
       return {};
@@ -311,7 +315,7 @@ CacheReclaimResult Cache::reclaimOne(CacheReclaimMode mode,
   }
 
   const std::optional<CacheEvictionCandidate> state =
-      states_.evictionCandidate(keepResumePoint);
+      states_.evictionCandidate(keepResumePoint, protectActiveRequests);
   const bool checkpoint = state && states_.checkpoint(state->id);
   const std::optional<CacheEvictionCandidate> kv =
       checkpoint ? std::nullopt : oldestStateFreeKvBlock();
@@ -354,11 +358,51 @@ void Cache::releaseUnusedKvBacking() {
 }
 
 CacheSnapshot Cache::snapshot() const {
-  return {pool_.snapshot(),
-          kv_.snapshot(),
-          states_.snapshot(),
-          lookup_,
-          static_cast<uint32_t>(requests_.size())};
+  CacheSnapshot result;
+  result.pool = pool_.snapshot();
+  result.kvCache = kv_.snapshot();
+  result.stateCache = states_.snapshot();
+  result.lookup = lookup_;
+  result.activeRequests = static_cast<uint32_t>(requests_.size());
+  result.prefixLimit = prefixLimit_;
+  result.prefixLimit.logicalBytes = result.kvCache.bytes + result.stateCache.bytes;
+  result.prefixLimit.overLimitBytes =
+      result.prefixLimit.logicalBytes > result.prefixLimit.limitBytes
+          ? result.prefixLimit.logicalBytes - result.prefixLimit.limitBytes
+          : 0;
+  return result;
+}
+
+uint64_t Cache::enforcePrefixLimit() {
+  uint64_t totalEvicted = 0;
+  for (;;) {
+    const CacheSnapshot before = snapshot();
+    if (before.prefixLimit.logicalBytes <= prefixLimit_.limitBytes)
+      break;
+    if (!reclaimOne(CacheReclaimMode::ReuseBacking, false, true).madeProgress)
+      break;
+    const CacheSnapshot after = snapshot();
+    if (after.prefixLimit.logicalBytes >= before.prefixLimit.logicalBytes)
+      break;
+    const uint64_t evicted =
+        before.prefixLimit.logicalBytes - after.prefixLimit.logicalBytes;
+    ++prefixLimit_.evictions;
+    prefixLimit_.evictedBytes += evicted;
+    const uint64_t kvEvicted =
+        before.kvCache.bytes > after.kvCache.bytes
+            ? before.kvCache.bytes - after.kvCache.bytes
+            : 0;
+    const uint64_t stateEvicted =
+        before.stateCache.bytes > after.stateCache.bytes
+            ? before.stateCache.bytes - after.stateCache.bytes
+            : 0;
+    prefixLimit_.evictedKvBytes += kvEvicted;
+    prefixLimit_.evictedStateBytes += stateEvicted;
+    totalEvicted += evicted;
+  }
+  if (totalEvicted)
+    static_cast<void>(reclaimEmptyExtents());
+  return totalEvicted;
 }
 
 Cache::Request &Cache::request(uint64_t requestId) {

@@ -766,6 +766,119 @@ void testLogicalKvPressureStillReclaimsPages() {
   fixture.cache.endRequest(2);
 }
 
+void testPrefixLimitBoundsUniquePrefixesInLruOrder() {
+  test::TestKvBacking backing{16, 100};
+  KvPool pool{backing};
+  engine::Cache cache{pool, cacheNamespace(), 300};
+  auto publishPrefix = [&](uint64_t request, uint32_t salt) {
+    std::vector<uint32_t> prompt(65);
+    for (uint32_t index = 0; index < prompt.size(); ++index)
+      prompt[index] = salt + index + 1;
+    cache.beginRequest(request);
+    require(cache.ensureTokens(request, 64).granted(),
+            "bounded prefix KV admission failed");
+    const uint64_t block = cache.publishCommittedBlocks(request, prompt, 64);
+    require(block != 0, "bounded prefix did not publish complete KV pages");
+    cache.publishCompositeState(block, std::make_shared<TestState>(100));
+    cache.endRequest(request);
+    return prompt;
+  };
+
+  const auto older = publishPrefix(1, 1000);
+  require(cache.snapshot().prefixLimit.logicalBytes == 300,
+          "single prefix accounting did not include KV and recurrent state");
+  const auto newer = publishPrefix(2, 9000);
+  const CacheSnapshot bounded = cache.snapshot();
+  require(bounded.prefixLimit.limitBytes == 300 &&
+              bounded.prefixLimit.logicalBytes == 300 &&
+              bounded.prefixLimit.overLimitBytes == 0 &&
+              bounded.prefixLimit.evictions == 3 &&
+              bounded.prefixLimit.evictedBytes == 300,
+          "unique prefixes did not stay within the byte limit by deterministic LRU");
+  require(cache.cachedTokens(older) == 0 && cache.cachedTokens(newer) == 64,
+          "the oldest unique prefix survived instead of the most recent prefix");
+}
+
+void testPrefixLimitNeverEvictsActiveOrPinnedEntries() {
+  {
+    test::TestKvBacking backing{8, 100};
+    KvPool pool{backing};
+    engine::Cache cache{pool, cacheNamespace(), 0};
+    std::vector<uint32_t> prompt(65, 77);
+    cache.beginRequest(1);
+    require(cache.ensureTokens(1, 64).granted(),
+            "active-prefix KV admission failed");
+    const uint64_t block = cache.publishCommittedBlocks(1, prompt, 64);
+    cache.publishCompositeState(block, std::make_shared<TestState>(100));
+    require(cache.enforcePrefixLimit() == 0 &&
+                cache.snapshot().kvCache.blocks == 2 &&
+                cache.snapshot().stateCache.entries == 1 &&
+                cache.snapshot().prefixLimit.overLimitBytes == 300,
+            "prefix limit evicted entries owned by an active request");
+    cache.endRequest(1);
+    const CacheSnapshot idle = cache.snapshot();
+    require(idle.kvCache.blocks == 0 && idle.stateCache.entries == 0 &&
+                idle.prefixLimit.logicalBytes == 0 &&
+                idle.prefixLimit.overLimitBytes == 0,
+            "idle request completion did not enforce a zero-byte limit");
+  }
+
+  {
+    test::TestKvBacking backing{16, 100};
+    KvPool pool{backing};
+    engine::Cache cache{pool, cacheNamespace(), 300};
+    auto publishPrefix = [&](uint64_t request, uint32_t salt) {
+      std::vector<uint32_t> prompt(65);
+      for (uint32_t index = 0; index < prompt.size(); ++index)
+        prompt[index] = salt + index + 1;
+      cache.beginRequest(request);
+      require(cache.ensureTokens(request, 64).granted(),
+              "pinned-prefix KV admission failed");
+      const uint64_t block = cache.publishCommittedBlocks(request, prompt, 64);
+      cache.publishCompositeState(block, std::make_shared<TestState>(100));
+      cache.endRequest(request);
+      return prompt;
+    };
+    const auto pinned = publishPrefix(1, 2000);
+    auto lease = cache.lookup(pinned);
+    require(lease.resumeBoundary() == 64,
+            "test prefix state could not be pinned");
+    static_cast<void>(publishPrefix(2, 11000));
+    const CacheSnapshot protectedSnapshot = cache.snapshot();
+    require(protectedSnapshot.prefixLimit.logicalBytes == 300 &&
+                protectedSnapshot.stateCache.pinned == 1 &&
+                lease.resumeBoundary() == 64 &&
+                cache.cachedTokens(pinned) == 64,
+            "prefix limit evicted a pinned state or its active KV chain");
+    lease.state.reset();
+  }
+}
+
+void testPrefixLimitPreservesExactCacheMatching() {
+  test::TestKvBacking backing{8, 100};
+  KvPool pool{backing};
+  engine::Cache cache{pool, cacheNamespace(), 300};
+  std::vector<uint32_t> prompt(65);
+  for (uint32_t index = 0; index < prompt.size(); ++index)
+    prompt[index] = 15000 + index;
+  cache.beginRequest(1);
+  require(cache.ensureTokens(1, 64).granted(),
+          "exact-prefix KV admission failed");
+  const uint64_t block = cache.publishCommittedBlocks(1, prompt, 64);
+  cache.publishCompositeState(block, std::make_shared<TestState>(100));
+  cache.endRequest(1);
+
+  {
+    const auto exact = cache.lookup(prompt);
+    require(exact.kvBoundary == 64 && exact.resumeBoundary() == 64,
+            "exact prompt replay lost its cached prefix under the limit");
+  }
+  prompt[9] += 1;
+  const auto changed = cache.lookup(prompt);
+  require(changed.kvBoundary == 0 && changed.resumeBoundary() == 0,
+          "different token content reused a cached prefix under the limit");
+}
+
 } // namespace
 
 int main() {
@@ -797,6 +910,9 @@ int main() {
     testDuplicateProbePromotesStateWithoutLookupAccounting();
     testUnifiedRecencyAndPhysicalReclaimAccounting();
     testFinishedRequestLeavesTailKvBeforeItsState();
+    testPrefixLimitBoundsUniquePrefixesInLruOrder();
+    testPrefixLimitNeverEvictsActiveOrPinnedEntries();
+    testPrefixLimitPreservesExactCacheMatching();
     std::cout << "KV-first cache tests passed\n";
     return 0;
   } catch (const std::exception &error) {

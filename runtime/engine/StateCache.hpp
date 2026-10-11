@@ -107,7 +107,8 @@ public:
   // keep their disposable priority: one is withheld only when no ordinary
   // state exists.
   [[nodiscard]] std::optional<CacheEvictionCandidate>
-  evictionCandidate(bool keepResumePoint = false) const noexcept;
+  evictionCandidate(bool keepResumePoint = false,
+                    bool protectActiveKv = false) const noexcept;
   [[nodiscard]] StateEviction evict(uint64_t kvBlock) noexcept;
   [[nodiscard]] StateCacheSnapshot snapshot() const noexcept;
 

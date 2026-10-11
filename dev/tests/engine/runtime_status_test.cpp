@@ -87,6 +87,13 @@ void testCleanRuntimeStatus() {
   engine.resources.stateCache.checkpointRetirements = 3;
   engine.resources.lookup = {3, 128, 64, 1};
   engine.resources.activeRequests = 1;
+  engine.resources.prefixLimit = {
+      .limitBytes = 8 * kGiB,
+      .logicalBytes = 32 * 4096ULL + 350'224'384,
+      .overLimitBytes = 0,
+      .evictions = 2,
+      .evictedBytes = 4096,
+  };
 
   WarmupReport warmup;
   warmup.maximumPrefill = WarmupStepStatus::Complete;
@@ -186,6 +193,13 @@ void testCleanRuntimeStatus() {
   require(json.find("\"ready\":true,\"maximum_context_tokens\":102400,") !=
               std::string::npos,
           "status advertised model capacity instead of the active engine limit");
+  require(json.find("\"prefix_cache\":{\"limit_bytes\":8589934592,") !=
+                  std::string::npos &&
+              json.find("\"over_limit_bytes\":0,\"evictions\":2,") !=
+                  std::string::npos &&
+              json.find("completed reusable KV plus recurrent-state entries") !=
+                  std::string::npos,
+          "status omitted prefix-cache bound or its logical-memory semantics");
   require(json.find("\"images\":{\"encodes\":3,\"embedding_reuses\":4}") !=
               std::string::npos,
           "image telemetry is missing from status");

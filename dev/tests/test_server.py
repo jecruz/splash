@@ -3011,8 +3011,10 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(Path(args.tokenizer), package / "tokenizer")
         self.assertIsNone(args.max_context)
         self.assertIsNone(args.max_memory)
+        self.assertIsNone(args.max_prefix_cache)
         self.assertEqual(args.kv_format, "int8")
         self.assertNotIn("--kv-format", api._native_command(args))
+        self.assertNotIn("--max-prefix-cache", api._native_command(args))
         bf16_args = api.parse_args([*required, "--kv-format", "bf16"])
         self.assertEqual(api._native_command(bf16_args)[-2:], ["--kv-format", "bf16"])
         with mock.patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
@@ -3022,6 +3024,21 @@ class ServerTest(unittest.TestCase):
         )
         self.assertEqual(
             api.parse_args([*required, "--max-memory", "32G"]).max_memory, 32 * 1024**3
+        )
+        self.assertEqual(
+            api.parse_args([*required, "--max-prefix-cache", "8G"]).max_prefix_cache,
+            8 * 1024**3,
+        )
+        self.assertEqual(
+            api.parse_args([*required, "--max-prefix-cache", "0"]).max_prefix_cache,
+            0,
+        )
+        capped_args = api.parse_args(
+            [*required, "--max-prefix-cache", "512M"]
+        )
+        self.assertEqual(
+            api._native_command(capped_args)[-2:],
+            ["--max-prefix-cache", str(512 * 1024**2)],
         )
         self.assertEqual(args.max_new_tokens, 32768)
         self.assertEqual(args.request_timeout, 1800)
@@ -3045,6 +3062,7 @@ class ServerTest(unittest.TestCase):
                 ("--max-context", "not-a-number"),
                 ("--max-memory", "0"),
                 ("--max-memory", "not-a-number"),
+                ("--max-prefix-cache", "-1"),
                 ("--max-new-tokens", "0"),
                 ("--request-timeout", "0"),
                 ("--request-timeout", "nan"),
