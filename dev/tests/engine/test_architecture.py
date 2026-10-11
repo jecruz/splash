@@ -190,6 +190,12 @@ class ArchitectureTests(unittest.TestCase):
   return ops::OperatorChoices{};
 }
 '''.replace("__MANIFEST_SHA256__", check_architecture.QWEN38_MANIFEST_SHA256)
+        profile = profile.replace(
+            "  // Braces in a line comment do not change the function depth: } {\n",
+            "  /" + "\\\n" + "/ split line comment: } {\n"
+            "  /" + "\\\n" + "* split block comment: { }\n"
+            "  *" + "\\\n" + "/\n",
+        )
         suffix = "auto laterPolicy = ops::LinearTile::N128;\n"
         rewritten, error = check_architecture.guarded_runtime_policy(
             "runtime/engine/RuntimeResources.mm", prefix + profile + suffix

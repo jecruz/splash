@@ -47,7 +47,10 @@ def _skip_quoted_literal(text: str, start: int, quote: str) -> int | None:
     index = start + 1
     while index < len(text):
         if text[index] == "\\":
-            index += 2
+            if text.startswith("\\\r\n", index):
+                index += 3
+            else:
+                index += 2
         elif text[index] == quote:
             return index + 1
         else:
@@ -74,27 +77,49 @@ def _skip_raw_string(text: str, start: int) -> int | None:
     return closing + len(delimiter) + 2
 
 
+def _after_line_splices(text: str, index: int) -> int:
+    """Skip C++ backslash-newline pairs beginning at index."""
+    while text.startswith("\\\r\n", index) or text.startswith("\\\n", index):
+        index += 3 if text.startswith("\\\r\n", index) else 2
+    return index
+
+
 def _matching_brace_end(text: str, opening: int) -> int | None:
     """Find a matching C++ brace while ignoring comments and string literals."""
     depth = 1
     index = opening + 1
     while index < len(text):
-        if text.startswith("//", index):
-            index += 2
+        after_slash = _after_line_splices(text, index + 1) if text[index] == "/" else index
+        if text[index] == "/" and after_slash < len(text) and text[after_slash] == "/":
+            index = after_slash + 1
             while index < len(text):
-                newline = text.find("\n", index)
-                if newline < 0:
-                    return None
-                if newline == 0 or text[newline - 1] != "\\":
-                    index = newline + 1
+                spliced = _after_line_splices(text, index)
+                if spliced != index:
+                    index = spliced
+                    continue
+                if text.startswith("\r\n", index):
+                    index += 2
                     break
-                index = newline + 1
+                if text[index] in "\r\n":
+                    index += 1
+                    break
+                index += 1
             continue
-        if text.startswith("/*", index):
-            closing = text.find("*/", index + 2)
-            if closing < 0:
+        if text[index] == "/" and after_slash < len(text) and text[after_slash] == "*":
+            index = after_slash + 1
+            while index < len(text):
+                if text[index] == "*":
+                    after_star = _after_line_splices(text, index + 1)
+                    if after_star < len(text) and text[after_star] == "/":
+                        index = after_star + 1
+                        break
+                index += 1
+            else:
                 return None
-            index = closing + 2
+            continue
+        spliced = _after_line_splices(text, index)
+        if spliced != index:
+            index = spliced
             continue
         raw_end = _skip_raw_string(text, index)
         if raw_end is not None:
