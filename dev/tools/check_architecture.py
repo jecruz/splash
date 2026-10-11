@@ -40,6 +40,7 @@ QWEN38_PROFILE_GUARD = re.compile(
     re.DOTALL,
 )
 RAW_STRING_PREFIX = re.compile(r"(?:u8|u|U|L)?R\"")
+UNTERMINATED_CPP_TOKEN = -1
 
 
 def _skip_quoted_literal(text: str, start: int, quote: str) -> int | None:
@@ -81,15 +82,15 @@ def _is_numeric_digit_separator(text: str, index: int) -> bool:
     """Recognize digit separators so they are not parsed as character literals."""
     if index == 0 or index + 1 >= len(text):
         return False
-    previous, following = text[index - 1], text[index + 1]
-    if previous.isdigit() and following.isdigit():
-        return True
-    if previous.lower() not in "abcdef" or following.lower() not in "abcdef0123456789":
-        return False
     token_start = index - 1
-    while token_start > 0 and (text[token_start - 1].isalnum() or text[token_start - 1] == "_"):
+    while token_start > 0 and (text[token_start - 1].isalnum() or text[token_start - 1] in "_'."):
         token_start -= 1
-    return text[token_start : token_start + 2].lower() == "0x"
+    token_prefix = text[token_start : index - 1].lower()
+    previous, following = text[index - 1], text[index + 1]
+    if token_prefix.startswith(("0x", "0b")):
+        valid_digits = "0123456789abcdef" if token_prefix.startswith("0x") else "01"
+        return previous.lower() in valid_digits and following.lower() in valid_digits
+    return previous.isdigit() and following.isdigit()
 
 
 def _after_line_splices(text: str, index: int) -> int:
@@ -100,7 +101,7 @@ def _after_line_splices(text: str, index: int) -> int:
 
 
 def _skip_cpp_non_code(text: str, index: int) -> int | None:
-    """Return the end of a C++ comment or literal starting at index."""
+    """Return a comment or literal end, None for code, or a malformed-token sentinel."""
     after_slash = _after_line_splices(text, index + 1) if text[index] == "/" else index
     if text[index] == "/" and after_slash < len(text) and text[after_slash] == "/":
         index = after_slash + 1
@@ -123,14 +124,20 @@ def _skip_cpp_non_code(text: str, index: int) -> int | None:
                 if after_star < len(text) and text[after_star] == "/":
                     return after_star + 1
             index += 1
-        return None
+        return UNTERMINATED_CPP_TOKEN
     raw_end = _skip_raw_string(text, index)
     if raw_end is not None:
         return raw_end
+    raw_prefix = RAW_STRING_PREFIX.match(text, index)
+    if raw_prefix is not None and not (
+        index and (text[index - 1].isalnum() or text[index - 1] == "_")
+    ):
+        return UNTERMINATED_CPP_TOKEN
     if text[index] == "'" and _is_numeric_digit_separator(text, index):
         return None
     if text[index] in ('"', "'"):
-        return _skip_quoted_literal(text, index, text[index])
+        literal_end = _skip_quoted_literal(text, index, text[index])
+        return UNTERMINATED_CPP_TOKEN if literal_end is None else literal_end
     return None
 
 
@@ -140,6 +147,11 @@ def _mask_cpp_non_code(text: str, mask_literals: bool = True) -> str:
     index = 0
     while index < len(text):
         end = _skip_cpp_non_code(text, index)
+        if end == UNTERMINATED_CPP_TOKEN:
+            for offset in range(index, len(text)):
+                if masked[offset] not in "\r\n":
+                    masked[offset] = " "
+            break
         if end is None:
             index += 1
             continue
@@ -152,15 +164,19 @@ def _mask_cpp_non_code(text: str, mask_literals: bool = True) -> str:
     return "".join(masked)
 
 
-def _mask_inactive_if_zero(text: str) -> str:
+def _mask_inactive_if_zero(text: str, directive_view: str | None = None) -> str:
     """Blank literal #if 0 branches so decoy profiles cannot be selected."""
     masked = list(text)
+    directives = text if directive_view is None else directive_view
     stack: list[tuple[bool, bool, bool]] = []
     inactive = False
     line_start = 0
-    for line in text.splitlines(keepends=True):
+    for line in directives.splitlines(keepends=True):
         content_end = line_start + len(line.rstrip("\r\n"))
-        directive = re.match(r"^\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b(.*)", line[: content_end - line_start])
+        directive = re.match(
+            r"^\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b(.*)",
+            line[: content_end - line_start],
+        )
         if directive:
             kind, condition = directive.groups()
             if kind == "if":
@@ -175,8 +191,9 @@ def _mask_inactive_if_zero(text: str) -> str:
                 inactive = parent_inactive
             elif kind == "elif" and stack:
                 parent_inactive, _, _ = stack[-1]
-                stack[-1] = (parent_inactive, False, False)
-                inactive = parent_inactive
+                zero_branch = condition.strip() == "0"
+                stack[-1] = (parent_inactive, zero_branch, False)
+                inactive = parent_inactive or zero_branch
             elif kind == "endif" and stack:
                 parent_inactive, _, _ = stack.pop()
                 inactive = parent_inactive
@@ -194,6 +211,8 @@ def _matching_brace_end(text: str, opening: int) -> int | None:
     index = opening + 1
     while index < len(text):
         end = _skip_cpp_non_code(text, index)
+        if end == UNTERMINATED_CPP_TOKEN:
+            return None
         if end is not None:
             index = end
             continue
@@ -236,8 +255,10 @@ def guarded_runtime_policy(name: str, text: str) -> tuple[str, str | None]:
     if end is None:
         return text, "runtime Qwen3.8 profile has an incomplete body"
 
-    body = _mask_cpp_non_code(text[match.end() : end], mask_literals=False)
-    body = _mask_inactive_if_zero(body)
+    body_source = text[match.end() : end]
+    body = _mask_cpp_non_code(body_source, mask_literals=False)
+    directive_view = _mask_cpp_non_code(body_source)
+    body = _mask_inactive_if_zero(body, directive_view)
     if not QWEN38_PROFILE_GUARD.match(body):
         return text, "runtime Qwen3.8 profile is missing a required selector guard"
     return text[:match.start()] + text[end:], None

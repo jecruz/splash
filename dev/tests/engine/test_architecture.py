@@ -172,6 +172,9 @@ class ArchitectureTests(unittest.TestCase):
     def test_profile_scanner_ignores_braces_in_comments_and_literals(self):
         prefix = '''constexpr auto grouped = 1'000;
 constexpr auto groupedHex = 0xA'B;
+constexpr auto groupedHexDigitFirst = 0x1'AB;
+constexpr auto groupedHexLetterLast = 0xA'1;
+constexpr auto groupedHexMultiple = 0xA'B'C;
 // ops::OperatorChoices m3UltraQwen38Profile() { }
 /* ops::OperatorChoices m3UltraQwen38Profile() { } */
 const char *decoy = "ops::OperatorChoices m3UltraQwen38Profile() { }";
@@ -211,6 +214,22 @@ ops::OperatorChoices m3UltraQwen38Profile() { return {}; }
         )
         self.assertIsNone(error)
         self.assertEqual(rewritten, prefix + "\n" + suffix)
+
+    def test_profile_scanner_fails_closed_on_unterminated_non_code(self):
+        for source in ('{ /* }', '{ " }', '{ R"tag( }'):
+            with self.subTest(source=source):
+                self.assertIsNone(check_architecture._matching_brace_end(source, 0))
+
+    def test_inactive_directives_ignore_multiline_literal_contents(self):
+        source = '''const char *literal = R"tag(
+#if 0
+)tag";
+ops::LinearTile::N128
+'''
+        guard_view = check_architecture._mask_cpp_non_code(source, mask_literals=False)
+        directive_view = check_architecture._mask_cpp_non_code(source)
+        masked = check_architecture._mask_inactive_if_zero(guard_view, directive_view)
+        self.assertIn("ops::LinearTile::N128", masked)
 
     def test_production_cannot_include_offline_tuning(self):
         with tempfile.TemporaryDirectory() as temporary:
