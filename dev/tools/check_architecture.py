@@ -39,6 +39,81 @@ QWEN38_PROFILE_GUARD = re.compile(
     + r"manifestSha256\s*\)\s*return\s*\{\s*\}\s*;",
     re.DOTALL,
 )
+RAW_STRING_PREFIX = re.compile(r"(?:u8|u|U|L)?R\"")
+
+
+def _skip_quoted_literal(text: str, start: int, quote: str) -> int | None:
+    """Return the first index after a quoted C++ literal, or None if incomplete."""
+    index = start + 1
+    while index < len(text):
+        if text[index] == "\\":
+            index += 2
+        elif text[index] == quote:
+            return index + 1
+        else:
+            index += 1
+    return None
+
+
+def _skip_raw_string(text: str, start: int) -> int | None:
+    """Return the first index after a raw C++ string, or None if start is not one."""
+    if start and (text[start - 1].isalnum() or text[start - 1] == "_"):
+        return None
+    prefix = RAW_STRING_PREFIX.match(text, start)
+    if prefix is None:
+        return None
+    opening = text.find("(", prefix.end())
+    if opening < 0:
+        return None
+    delimiter = text[prefix.end() : opening]
+    if len(delimiter) > 16 or any(char.isspace() or char in "()\\" for char in delimiter):
+        return None
+    closing = text.find(")" + delimiter + '"', opening + 1)
+    if closing < 0:
+        return None
+    return closing + len(delimiter) + 2
+
+
+def _matching_brace_end(text: str, opening: int) -> int | None:
+    """Find a matching C++ brace while ignoring comments and string literals."""
+    depth = 1
+    index = opening + 1
+    while index < len(text):
+        if text.startswith("//", index):
+            index += 2
+            while index < len(text):
+                newline = text.find("\n", index)
+                if newline < 0:
+                    return None
+                if newline == 0 or text[newline - 1] != "\\":
+                    index = newline + 1
+                    break
+                index = newline + 1
+            continue
+        if text.startswith("/*", index):
+            closing = text.find("*/", index + 2)
+            if closing < 0:
+                return None
+            index = closing + 2
+            continue
+        raw_end = _skip_raw_string(text, index)
+        if raw_end is not None:
+            index = raw_end
+            continue
+        if text[index] in ('"', "'"):
+            literal_end = _skip_quoted_literal(text, index, text[index])
+            if literal_end is None:
+                return None
+            index = literal_end
+            continue
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+    return None
 
 
 def production_sources() -> list[Path]:
@@ -65,18 +140,11 @@ def guarded_runtime_policy(name: str, text: str) -> tuple[str, str | None]:
         return text, "runtime profile must have exactly one Qwen3.8 definition"
 
     match = matches[0]
-    depth = 1
-    end = match.end()
-    while end < len(text) and depth:
-        if text[end] == "{":
-            depth += 1
-        elif text[end] == "}":
-            depth -= 1
-        end += 1
-    if depth:
+    end = _matching_brace_end(text, match.end() - 1)
+    if end is None:
         return text, "runtime Qwen3.8 profile has an incomplete body"
 
-    body = text[match.end():end]
+    body = text[match.end() : end]
     if not QWEN38_PROFILE_GUARD.match(body):
         return text, "runtime Qwen3.8 profile is missing a required selector guard"
     return text[:match.start()] + text[end:], None

@@ -169,6 +169,34 @@ class ArchitectureTests(unittest.TestCase):
                     ],
                 )
 
+    def test_profile_scanner_ignores_braces_in_comments_and_literals(self):
+        prefix = "// preceding source\n"
+        profile = '''ops::OperatorChoices m3UltraQwen38Profile(
+    const DeviceCapabilities &device,
+    const model::ModelPackage &package) {
+  constexpr std::string_view manifestSha256 = "__MANIFEST_SHA256__";
+  if (device.appleGpuFamily != 9 || device.gpuCoreCount != 60 ||
+      package.name() != "Qwen3.8-27B" ||
+      digestHex(package.descriptor.packageManifestSha256) != manifestSha256)
+    return {};
+  // Braces in a line comment do not change the function depth: } {
+  /* Nor do braces in a block comment: } { */
+  const char *quoted = "{ }";
+  const char closingBrace = '}';
+  const char *raw = R"delim({ })delim";
+  if (true) {
+    if (true) { }
+  }
+  return ops::OperatorChoices{};
+}
+'''.replace("__MANIFEST_SHA256__", check_architecture.QWEN38_MANIFEST_SHA256)
+        suffix = "auto laterPolicy = ops::LinearTile::N128;\n"
+        rewritten, error = check_architecture.guarded_runtime_policy(
+            "runtime/engine/RuntimeResources.mm", prefix + profile + suffix
+        )
+        self.assertIsNone(error)
+        self.assertEqual(rewritten, prefix + "\n" + suffix)
+
     def test_production_cannot_include_offline_tuning(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
