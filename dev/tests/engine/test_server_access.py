@@ -6,11 +6,11 @@ import os
 import unittest
 from unittest import mock
 
-from install import launcher
 from openai import AuthenticationError, OpenAI
-from server import server
 
 from dev.tests.test_server import FakeRuntime, Harness, Plan
+from install import launcher
+from server import server
 
 
 class ServerAccessTests(unittest.TestCase):
