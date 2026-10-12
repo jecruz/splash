@@ -3,7 +3,7 @@ set -eu
 
 for argument in "$@"; do
     case "${argument}" in
-        --api-key|--api-key=*)
+        --api*)
             printf '%s\n' 'splash-engine: set SPLASH_API_KEY in the environment; do not pass an API key as an argument' >&2
             exit 64
             ;;

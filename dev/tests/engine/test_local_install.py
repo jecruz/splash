@@ -433,15 +433,29 @@ class LocalInstallTests(unittest.TestCase):
         captured = json.loads(capture.read_text(encoding="utf-8"))
         self.assertEqual(captured["argv"], ["--version"])
         self.assertEqual(captured["key"], "fixture-secret")
-        rejected = subprocess.run(
-            [str(launcher), "--api-key", "fixture-secret"],
-            env=environment,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        self.assertEqual(rejected.returncode, 64)
-        self.assertNotIn("fixture-secret", rejected.stderr)
+        rejected_arguments = [
+            ("--api", "fixture-secret"),
+            ("--api-", "fixture-secret"),
+            ("--api-k", "fixture-secret"),
+            ("--api-ke", "fixture-secret"),
+            ("--api-key", "fixture-secret"),
+            ("--api=fixture-secret",),
+            ("--api-=fixture-secret",),
+            ("--api-k=fixture-secret",),
+            ("--api-ke=fixture-secret",),
+            ("--api-key=fixture-secret",),
+        ]
+        for arguments in rejected_arguments:
+            with self.subTest(arguments=arguments):
+                rejected = subprocess.run(
+                    [str(launcher), *arguments],
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(rejected.returncode, 64)
+                self.assertNotIn("fixture-secret", rejected.stderr)
         self.assertEqual(json.loads(capture.read_text(encoding="utf-8")), captured)
 
 

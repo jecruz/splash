@@ -377,6 +377,7 @@ def parse_args(argv=None):
         prog="splash",
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
         epilog=(
             "Quick start:\n"
             "  splash serve --model incoai/Qwen3.8-27B-Splash\n"
@@ -392,6 +393,7 @@ def parse_args(argv=None):
         help="run the local server; Ctrl+C stops it",
         description="Download a Splash model package if needed, then serve in the foreground.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
         epilog=(
             "Examples:\n"
             "  splash serve --model incoai/Qwen3.8-27B-Splash\n"

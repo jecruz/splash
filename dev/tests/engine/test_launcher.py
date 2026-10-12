@@ -24,6 +24,15 @@ MODEL_IDS = (
 
 
 class LauncherTests(unittest.TestCase):
+    def test_api_key_does_not_accept_abbreviated_options(self):
+        """Require the complete API-key option name in argparse."""
+        for prefix in ("--api", "--api-", "--api-k", "--api-ke"):
+            with self.subTest(prefix=prefix), mock.patch("sys.stderr", io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    launcher.parse_args(
+                        ["serve", "--model", MODEL_ID, prefix, "fixture-secret"]
+                    )
+
     def test_default_port_is_not_the_local_woodpecker_port(self):
         """Use the fork's documented non-Woodpecker listener by default."""
         with mock.patch.dict(os.environ, {}, clear=True):
