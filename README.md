@@ -24,9 +24,9 @@ splash serve --model incoai/Qwen3.8-27B-Splash
 ```
 
 The first run downloads and verifies the model package, checks available
-memory, and starts serving on `127.0.0.1:8000`.
+memory, and starts serving on `127.0.0.1:8318`.
 
-Once it prints `Ready`, leave this terminal open. Open <http://127.0.0.1:8000>
+Once it prints `Ready`, leave this terminal open. Open <http://127.0.0.1:8318>
 in your browser, or run an installed coding agent from another terminal:
 
 ```bash
@@ -44,7 +44,7 @@ tool calls, JSON Schema output, images, and inline PDFs. `/tokenize` and
 model.
 
 ```bash
-curl http://127.0.0.1:8000/v1/chat/completions \
+curl http://127.0.0.1:8318/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{
     "model": "incoai/Qwen3.8-27B-Splash",
@@ -86,7 +86,7 @@ For a custom model download location, see [model cache](DEVELOPMENT.md#model-cac
 
 ## Settings
 
-There is no config file. The server binds `127.0.0.1:8000` by default.
+There is no config file. The server binds `127.0.0.1:8318` by default.
 Context supports up to the model’s native 256K window; usable capacity
 depends on available memory. `splash serve --help` lists server options and examples.
 The startup summary and `maximum_context_tokens` in `/status` show the effective
@@ -99,7 +99,7 @@ that a long uncached prompt will reach its first token quickly.
 `splash serve` accepts these optional flags:
 
 - `--host`: HTTP bind address. Default: `127.0.0.1`.
-- `--port`: HTTP port. Defaults to `SPLASH_PORT` or `8000`.
+- `--port`: HTTP port. Defaults to `SPLASH_PORT` or `8318`.
 - `--max-memory`: ceiling on Metal allocations, e.g. `28G`. Default: auto.
 - `--max-context`: context limit, up to `256K`, e.g. `100K`. Default: auto.
 - `--max-prefix-cache`: logical idle reusable KV plus recurrent-state cache
@@ -111,6 +111,52 @@ that a long uncached prompt will reach its first token quickly.
 - `--api-key`: require this key on API requests, as a bearer token or
   `x-api-key`. Defaults to `SPLASH_API_KEY`.
 - `--no-webui`: turn off the chat page.
+
+## Local fork install
+
+The `jecruz/splash` fork has a user-local release manager separate from the
+Homebrew package. Run these commands from a clean checkout whose `HEAD` equals
+the fetched `origin/main`; the qualification receipt is tied to that exact
+commit. GitHub Actions is not enabled on the fork, so qualification records the
+local CI-equivalent targets and reports Woodpecker as not configured until the
+private mirror is available.
+
+```sh
+./install/qualify.sh
+./install/install.sh --qualification "$HOME/.local/state/splash/qualifications/<commit>/<attempt>/qualification.json"
+~/.local/bin/splash-engine serve --model incoai/Qwen3.8-27B-Splash
+./install/verify.sh
+./install/update.sh --qualification "$HOME/.local/state/splash/qualifications/<commit>/<attempt>/qualification.json"
+./install/rollback.sh
+./install/uninstall.sh
+```
+
+Qualification runs `make check-source`, `make check-native-cpu`,
+`make test-sanitizers`, and `make check-python-engine` in fresh Python 3.12,
+3.13, and 3.14 environments. Native builds, sanitizers, Python gates, and
+package builds run through `~/.local/bin/heavy-op` with a 16 GiB reservation.
+The installer validates the archive checksum and embedded `release.json`
+hashes before creating the immutable
+`~/.local/share/splash/releases/<full-commit-sha>` directory. It atomically
+updates `current` and retains `previous`; the manifest is available at
+`~/.local/share/splash/current/manifest.json`. The stable launcher uses only
+the selected release and defaults to `127.0.0.1:8318` (`SPLASH_PORT` or
+`--port` can override it), leaving Woodpecker's port 8000 untouched.
+
+`./install/verify.sh` checks the current links, qualification receipt,
+manifest, launcher version, engine and metallib hashes. An optional
+`--smoke-model OWNER/REPO --smoke-need-gb N` starts a model only if its package
+is already cached, uses a temporary port, and keeps that server lifetime under
+`heavy-op`. The launcher passes `SPLASH_API_KEY` through its inherited process
+environment; the key is never placed in command-line arguments, so a provider
+can supply it from Keychain. `splash-engine` rejects `--api-key`; configure
+`SPLASH_API_KEY` in the launching process environment instead. Rollback swaps
+the validated `current` and `previous` releases. Point a client at
+`http://127.0.0.1:8318/v1` and pass
+`SPLASH_API_KEY` through its environment when authentication is enabled.
+Uninstall removes only this installer's managed release root and
+`splash-engine`; it does not remove the legacy `splash-1974` shim or any
+`~/.local/opt/splash-*` directory.
 
 To use BF16 target KV, select it when starting the server:
 

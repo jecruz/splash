@@ -6,14 +6,23 @@ import os
 import unittest
 from unittest import mock
 
+from install import launcher
 from openai import AuthenticationError, OpenAI
+from server import server
 
 from dev.tests.test_server import FakeRuntime, Harness, Plan
-from install import launcher
-from server import server
 
 
 class ServerAccessTests(unittest.TestCase):
+    def test_server_default_port_matches_fork_launcher(self):
+        """Keep direct and packaged server defaults off Woodpecker's port."""
+        with mock.patch.dict(os.environ, {}, clear=True):
+            arguments = server.parse_args(
+                ["target", "draft", "--tokenizer", "tokenizer", "--model", "owner/repo"]
+            )
+        self.assertEqual(arguments.port, launcher.PORT)
+        self.assertEqual(arguments.port, 8318)
+
     def test_wildcard_listener_keeps_host_and_api_key_validation(self):
         harness = self.harness(
             host="0.0.0.0", allowed_hosts=("splash.local",), api_key="test-server-key"

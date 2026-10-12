@@ -4,6 +4,8 @@
 
 ### Added
 
+- Add the fork-local `splash-engine` launcher and qualified, versioned install,
+  verify, update, rollback, and uninstall lifecycle.
 - Bound retained native KV and recurrent-state prefixes with a shared default
   budget, deterministic LRU eviction, and `/status` accounting.
 - Expose `--max-prefix-cache` on `splash serve` to set or disable that budget.
@@ -16,6 +18,7 @@
 
 ### Changed
 
+- Use port 8318 as the default local listener to avoid the fork's Woodpecker port.
 - Use a numerically qualified sequential Q4 decode baseline on 60-core Apple9
   GPUs and apply the measured Qwen3.8-27B M3 Ultra profile only to its exact
   package manifest.

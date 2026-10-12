@@ -1,0 +1,24 @@
+#!/bin/sh
+set -eu
+
+for argument in "$@"; do
+    case "${argument}" in
+        --api-key|--api-key=*)
+            printf '%s\n' 'splash-engine: set SPLASH_API_KEY in the environment; do not pass an API key as an argument' >&2
+            exit 64
+            ;;
+    esac
+done
+
+runtime_root=${SPLASH_RUNTIME_ROOT:-"${HOME}/.local/share/splash"}
+release="${runtime_root}/current"
+python="${release}/python/bin/python3"
+launcher="${release}/install/launcher.py"
+
+if [ ! -x "${python}" ] || [ ! -r "${launcher}" ]; then
+    printf 'Splash runtime is not installed or is incomplete: %s\n' "${release}" >&2
+    exit 69
+fi
+
+export PYTHONDONTWRITEBYTECODE=1
+exec "${python}" -u "${launcher}" "$@"

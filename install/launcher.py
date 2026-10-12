@@ -23,7 +23,7 @@ except ImportError:  # Executed directly by the source or packaged entry point.
 
 ROOT = paths.ROOT
 RUNTIME_DIR = paths.RUNTIME
-PORT = 8000
+PORT = 8318
 REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 BASE_URL = f"http://127.0.0.1:{PORT}"
 
@@ -396,7 +396,7 @@ def parse_args(argv=None):
             "Examples:\n"
             "  splash serve --model incoai/Qwen3.8-27B-Splash\n"
             "  splash serve --model incoai/Qwen3.6-35B-A3B-Splash --max-context 128K\n\n"
-            "After Ready, open http://127.0.0.1:8000 or connect an installed agent.\n"
+            "After Ready, open http://127.0.0.1:8318 or connect an installed agent.\n"
             "The startup summary and /status report the effective context limit.\n"
             "A client may impose a smaller limit. Keep this terminal open; Ctrl+C stops serving."
         ),
@@ -410,7 +410,7 @@ def parse_args(argv=None):
         "--port",
         type=_parse_port,
         default=os.environ.get("SPLASH_PORT", str(PORT)),
-        help="HTTP port (default: SPLASH_PORT or 8000)",
+        help=f"HTTP port (default: SPLASH_PORT or {PORT})",
     )
     server.add_argument(
         "--model",

@@ -53,7 +53,7 @@ commands, bundled official model IDs and installed models without network access
 
 ## Server configuration
 
-The default listener is `127.0.0.1:8000`. To accept LAN connections:
+The default listener is `127.0.0.1:8318`. To accept LAN connections:
 
 ```sh
 splash serve --model incoai/Qwen3.8-27B-Splash --host 0.0.0.0 --api-key YOUR_KEY
@@ -257,7 +257,7 @@ OpenAI model discovery and the SDK's `models.list()`.
 from typesafe_sdk import Choice, Noul, Score, TypeSafeClient
 
 with TypeSafeClient(
-    base_url="http://127.0.0.1:8000",
+    base_url="http://127.0.0.1:8318",
     api_key="local",  # Use SPLASH_API_KEY's value if server authentication is on.
     model="incoai/Qwen3.8-27B-Splash",
 ) as client:
@@ -282,7 +282,7 @@ with TypeSafeClient(
 2–16 options and returns raw option logits:
 
 ```bash
-curl http://127.0.0.1:8000/v1/judgments \
+curl http://127.0.0.1:8318/v1/judgments \
   -H 'Content-Type: application/json' \
   -d '{
     "id": "approval",

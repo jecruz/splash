@@ -31,6 +31,7 @@ INSTALL_FILES = (
     "models.py",
     "catalog.py",
     "requirements.txt",
+    "splash-engine",
 )
 COMPLETION_FILES = ("models", "_splash", "splash.bash", "official-models.txt")
 SERVER_FILES = (

@@ -24,6 +24,13 @@ MODEL_IDS = (
 
 
 class LauncherTests(unittest.TestCase):
+    def test_default_port_is_not_the_local_woodpecker_port(self):
+        """Use the fork's documented non-Woodpecker listener by default."""
+        with mock.patch.dict(os.environ, {}, clear=True):
+            arguments = launcher.parse_args(["serve", "--model", MODEL_ID])
+        self.assertEqual(launcher.PORT, 8318)
+        self.assertEqual(arguments.port, 8318)
+
     def test_kv_format_is_an_explicit_load_option(self):
         base = ["serve", "--model", MODEL_ID]
         self.assertEqual(launcher.parse_args(base).kv_format, "int8")
@@ -196,7 +203,7 @@ class LauncherTests(unittest.TestCase):
     def test_foreground_exec_preserves_terminal_and_holds_lock(self):
         with tempfile.TemporaryDirectory() as temporary:
             runtime = Path(temporary)
-            lock_path = runtime / "serve-8000.lock"
+            lock_path = runtime / f"serve-{launcher.PORT}.lock"
             lock_path.write_text(
                 json.dumps(
                     {"pid": os.getpid(), "model": "stale-model" * 100, "port": 65535}
@@ -244,7 +251,7 @@ class LauncherTests(unittest.TestCase):
                     with self.assertRaises(BlockingIOError):
                         fcntl.flock(upgrade, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     fcntl.flock(upgrade, fcntl.LOCK_SH | fcntl.LOCK_NB)
-                with (runtime / "serve-8000.lock").open("a+") as other:
+                with (runtime / f"serve-{launcher.PORT}.lock").open("a+") as other:
                     with self.assertRaises(BlockingIOError):
                         fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
@@ -287,9 +294,10 @@ class LauncherTests(unittest.TestCase):
             install.assert_called_once_with(MODEL_ID)
             execute.assert_called_once()
             self.assertEqual(
-                {p.name for p in runtime.iterdir()}, {"serve.lock", "serve-8000.lock"}
+                {p.name for p in runtime.iterdir()},
+                {"serve.lock", f"serve-{launcher.PORT}.lock"},
             )
-            with (runtime / "serve-8000.lock").open("a+") as released:
+            with (runtime / f"serve-{launcher.PORT}.lock").open("a+") as released:
                 fcntl.flock(released, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     def test_upgrade_lock_blocks_every_port_before_model_work(self):
@@ -320,11 +328,11 @@ class LauncherTests(unittest.TestCase):
     def test_duplicate_serve_reports_existing_owner_without_model_work(self):
         with tempfile.TemporaryDirectory() as temporary:
             runtime = Path(temporary)
-            lock_path = runtime / "serve-8000.lock"
+            lock_path = runtime / f"serve-{launcher.PORT}.lock"
             owner = {
                 "pid": os.getpid(),
                 "model": "incoai/Qwen3.8-27B-Splash",
-                "port": 8000,
+                "port": launcher.PORT,
             }
             with lock_path.open("w+") as held:
                 fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -340,7 +348,7 @@ class LauncherTests(unittest.TestCase):
                     self.assertEqual(launcher.main(["serve", "--model", MODEL_ID]), 1)
                 self.assertIn(f"PID {os.getpid()}", error.getvalue())
                 self.assertIn("model incoai/Qwen3.8-27B-Splash", error.getvalue())
-                self.assertIn("port 8000", error.getvalue())
+                self.assertIn(f"port {launcher.PORT}", error.getvalue())
                 self.assertEqual(json.loads(lock_path.read_text()), owner)
                 probe.assert_not_called()
                 install.assert_not_called()
@@ -364,7 +372,7 @@ class LauncherTests(unittest.TestCase):
                 tempfile.TemporaryDirectory() as temporary,
             ):
                 runtime = Path(temporary)
-                lock_path = runtime / "serve-8000.lock"
+                lock_path = runtime / f"serve-{launcher.PORT}.lock"
                 lock_path.write_bytes(content)
                 with lock_path.open("a+") as held:
                     fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -395,7 +403,7 @@ class LauncherTests(unittest.TestCase):
                     "busy"
                 )
                 self.assertEqual(launcher.main(["serve", "--model", MODEL_ID]), 1)
-                with (Path(temporary) / "serve-8000.lock").open("a+") as held:
+                with (Path(temporary) / f"serve-{launcher.PORT}.lock").open("a+") as held:
                     fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     self.assertEqual(launcher.main(["serve", "--model", MODEL_ID]), 1)
                 install.assert_not_called()
@@ -426,7 +434,7 @@ class LauncherTests(unittest.TestCase):
                         self.assertEqual(client.recv(1), b"")
                     listener.close()
                 # Exercise the production probe against a real ephemeral port,
-                # without interfering with a user's server on port 8000.
+                # without interfering with a user's configured server port.
                 with (
                     mock.patch.object(launcher, "RUNTIME_DIR", Path(temporary)),
                     mock.patch.object(launcher, "_ensure_installed") as install,
@@ -734,7 +742,7 @@ class LauncherTests(unittest.TestCase):
             mock.patch("sys.stderr", io.StringIO()),
         ):
             self.assertEqual(launcher.main(["serve", "--model", MODEL_ID]), 1)
-            with (Path(temporary) / "serve-8000.lock").open("a+") as released:
+            with (Path(temporary) / f"serve-{launcher.PORT}.lock").open("a+") as released:
                 fcntl.flock(released, fcntl.LOCK_EX | fcntl.LOCK_NB)
         execute.assert_not_called()
 
@@ -749,7 +757,7 @@ class LauncherTests(unittest.TestCase):
         ):
             self.assertEqual(launcher.main(["serve", "--model", MODEL_ID]), 1)
             self.assertIn("disk full", error.getvalue())
-            with (Path(temporary) / "serve-8000.lock").open("a+") as released:
+            with (Path(temporary) / f"serve-{launcher.PORT}.lock").open("a+") as released:
                 fcntl.flock(released, fcntl.LOCK_EX | fcntl.LOCK_NB)
         install.assert_not_called()
         execute.assert_not_called()
