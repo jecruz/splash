@@ -412,7 +412,9 @@ class LauncherTests(unittest.TestCase):
                     "busy"
                 )
                 self.assertEqual(launcher.main(["serve", "--model", MODEL_ID]), 1)
-                with (Path(temporary) / f"serve-{launcher.PORT}.lock").open("a+") as held:
+                with (Path(temporary) / f"serve-{launcher.PORT}.lock").open(
+                    "a+"
+                ) as held:
                     fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     self.assertEqual(launcher.main(["serve", "--model", MODEL_ID]), 1)
                 install.assert_not_called()
@@ -751,7 +753,9 @@ class LauncherTests(unittest.TestCase):
             mock.patch("sys.stderr", io.StringIO()),
         ):
             self.assertEqual(launcher.main(["serve", "--model", MODEL_ID]), 1)
-            with (Path(temporary) / f"serve-{launcher.PORT}.lock").open("a+") as released:
+            with (Path(temporary) / f"serve-{launcher.PORT}.lock").open(
+                "a+"
+            ) as released:
                 fcntl.flock(released, fcntl.LOCK_EX | fcntl.LOCK_NB)
         execute.assert_not_called()
 
@@ -766,7 +770,9 @@ class LauncherTests(unittest.TestCase):
         ):
             self.assertEqual(launcher.main(["serve", "--model", MODEL_ID]), 1)
             self.assertIn("disk full", error.getvalue())
-            with (Path(temporary) / f"serve-{launcher.PORT}.lock").open("a+") as released:
+            with (Path(temporary) / f"serve-{launcher.PORT}.lock").open(
+                "a+"
+            ) as released:
                 fcntl.flock(released, fcntl.LOCK_EX | fcntl.LOCK_NB)
         install.assert_not_called()
         execute.assert_not_called()

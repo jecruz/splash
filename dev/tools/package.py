@@ -278,9 +278,7 @@ def main(argv=None):
                         stage,
                         arcname=name,
                         filter=lambda item: (
-                            None
-                            if "__pycache__" in Path(item.name).parts
-                            else item
+                            None if "__pycache__" in Path(item.name).parts else item
                         ),
                     )
                 pending.flush()

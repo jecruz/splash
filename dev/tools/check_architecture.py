@@ -70,7 +70,9 @@ def _skip_raw_string(text: str, start: int) -> int | None:
     if opening < 0:
         return None
     delimiter = text[prefix.end() : opening]
-    if len(delimiter) > 16 or any(char.isspace() or char in "()\\" for char in delimiter):
+    if len(delimiter) > 16 or any(
+        char.isspace() or char in "()\\" for char in delimiter
+    ):
         return None
     closing = text.find(")" + delimiter + '"', opening + 1)
     if closing < 0:
@@ -83,7 +85,9 @@ def _is_numeric_digit_separator(text: str, index: int) -> bool:
     if index == 0 or index + 1 >= len(text):
         return False
     token_start = index - 1
-    while token_start > 0 and (text[token_start - 1].isalnum() or text[token_start - 1] in "_'."):
+    while token_start > 0 and (
+        text[token_start - 1].isalnum() or text[token_start - 1] in "_'."
+    ):
         token_start -= 1
     token_prefix = text[token_start : index - 1].lower()
     previous, following = text[index - 1], text[index + 1]
@@ -155,7 +159,9 @@ def _mask_cpp_non_code(text: str, mask_literals: bool = True) -> str:
         if end is None:
             index += 1
             continue
-        is_literal = text[index] in ('"', "'") or _skip_raw_string(text, index) is not None
+        is_literal = (
+            text[index] in ('"', "'") or _skip_raw_string(text, index) is not None
+        )
         if not is_literal or mask_literals:
             for offset in range(index, end):
                 if masked[offset] not in "\r\n":
@@ -261,7 +267,7 @@ def guarded_runtime_policy(name: str, text: str) -> tuple[str, str | None]:
     body = _mask_inactive_if_zero(body, directive_view)
     if not QWEN38_PROFILE_GUARD.match(body):
         return text, "runtime Qwen3.8 profile is missing a required selector guard"
-    return text[:match.start()] + text[end:], None
+    return text[: match.start()] + text[end:], None
 
 
 def check_server_dependencies() -> list[str]:

@@ -107,7 +107,7 @@ class ArchitectureTests(unittest.TestCase):
                     source.unlink()
 
     def test_manifest_gated_qwen38_profile_is_allowed_only_at_assembly(self):
-        profile = '''ops::OperatorChoices m3UltraQwen38Profile(
+        profile = """ops::OperatorChoices m3UltraQwen38Profile(
     const DeviceCapabilities &device,
     const model::ModelPackage &package) {
   constexpr std::string_view manifestSha256 = "__MANIFEST_SHA256__";
@@ -121,7 +121,7 @@ class ArchitectureTests(unittest.TestCase):
           ops::PrefillSplitMultiplier::Two}},
   };
 }
-'''
+"""
         profile = profile.replace(
             "__MANIFEST_SHA256__", check_architecture.QWEN38_MANIFEST_SHA256
         )
@@ -144,7 +144,7 @@ class ArchitectureTests(unittest.TestCase):
                 )
 
                 tautological = profile.replace(
-                    f'constexpr std::string_view manifestSha256 = '
+                    f"constexpr std::string_view manifestSha256 = "
                     f'"{check_architecture.QWEN38_MANIFEST_SHA256}";',
                     "auto manifestSha256 = "
                     "digestHex(package.descriptor.packageManifestSha256);",
@@ -170,7 +170,7 @@ class ArchitectureTests(unittest.TestCase):
                 )
 
     def test_profile_scanner_ignores_braces_in_comments_and_literals(self):
-        prefix = '''constexpr auto grouped = 1'000;
+        prefix = """constexpr auto grouped = 1'000;
 constexpr auto groupedHex = 0xA'B;
 constexpr auto groupedHexDigitFirst = 0x1'AB;
 constexpr auto groupedHexLetterLast = 0xA'1;
@@ -182,8 +182,8 @@ const char *decoy = "ops::OperatorChoices m3UltraQwen38Profile() { }";
 ops::OperatorChoices m3UltraQwen38Profile() { return {}; }
 #endif
 // preceding source
-'''
-        profile = '''ops::OperatorChoices m3UltraQwen38Profile(
+"""
+        profile = """ops::OperatorChoices m3UltraQwen38Profile(
     const DeviceCapabilities &device,
     const model::ModelPackage &package) {
   constexpr std::string_view manifestSha256 = "__MANIFEST_SHA256__";
@@ -201,7 +201,7 @@ ops::OperatorChoices m3UltraQwen38Profile() { return {}; }
   }
   return ops::OperatorChoices{};
 }
-'''.replace("__MANIFEST_SHA256__", check_architecture.QWEN38_MANIFEST_SHA256)
+""".replace("__MANIFEST_SHA256__", check_architecture.QWEN38_MANIFEST_SHA256)
         profile = profile.replace(
             "  // Braces in a line comment do not change the function depth: } {\n",
             "  /" + "\\\n" + "/ split line comment: } {\n"
@@ -216,16 +216,16 @@ ops::OperatorChoices m3UltraQwen38Profile() { return {}; }
         self.assertEqual(rewritten, prefix + "\n" + suffix)
 
     def test_profile_scanner_fails_closed_on_unterminated_non_code(self):
-        for source in ('{ /* }', '{ " }', '{ R"tag( }'):
+        for source in ("{ /* }", '{ " }', '{ R"tag( }'):
             with self.subTest(source=source):
                 self.assertIsNone(check_architecture._matching_brace_end(source, 0))
 
     def test_inactive_directives_ignore_multiline_literal_contents(self):
-        source = '''const char *literal = R"tag(
+        source = """const char *literal = R"tag(
 #if 0
 )tag";
 ops::LinearTile::N128
-'''
+"""
         guard_view = check_architecture._mask_cpp_non_code(source, mask_literals=False)
         directive_view = check_architecture._mask_cpp_non_code(source)
         masked = check_architecture._mask_inactive_if_zero(guard_view, directive_view)

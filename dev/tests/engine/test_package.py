@@ -122,7 +122,9 @@ class PackageTests(unittest.TestCase):
                 mode_reference.touch(mode=0o666)
                 self.assertEqual(
                     stat.S_IMODE(
-                        (root / f"dist/splash-{version}-arm64-macos26.tar.gz").stat().st_mode
+                        (root / f"dist/splash-{version}-arm64-macos26.tar.gz")
+                        .stat()
+                        .st_mode
                     ),
                     stat.S_IMODE(mode_reference.stat().st_mode),
                 )
@@ -165,7 +167,9 @@ class PackageTests(unittest.TestCase):
                     "run",
                     return_value=subprocess.CompletedProcess([], 0),
                 ),
-                mock.patch.object(package, "_package_staging_directory", cleanup_failure),
+                mock.patch.object(
+                    package, "_package_staging_directory", cleanup_failure
+                ),
                 mock.patch("sys.stdout"),
                 self.assertRaises(OSError) as raised,
             ):
