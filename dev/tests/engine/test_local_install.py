@@ -39,7 +39,7 @@ class LocalInstallTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def _qualification(self, source: Path, revision: str) -> Path:
-        """Write a hash-bound fixture receipt with the exact local gate commands."""
+        """Write local-gate and private-package fixture evidence for one revision."""
         attempt = (self.root / "evidence" / revision).resolve()
         attempt.mkdir(parents=True)
         temporary_root = self.root / f"splash-qualification-fixture-{revision[:8]}"
@@ -55,11 +55,7 @@ class LocalInstallTests(unittest.TestCase):
                     "argv": splash_runtime._expected_gate_argv(target, temporary_root),
                     "cwd": str(source.resolve()),
                     "return_code": 0,
-                    "heavy_op_need_gb": (
-                        None
-                        if target == "check-source"
-                        else splash_runtime.HEAVY_OP_NEED_GB
-                    ),
+                    "heavy_op_need_gb": splash_runtime.HEAVY_OP_NEED_GB,
                     "temporary_root": str(temporary_root),
                     "status": "pass",
                     "stdout": {
@@ -74,6 +70,37 @@ class LocalInstallTests(unittest.TestCase):
                     },
                 }
             )
+        revision_archive = (
+            source / "dist" / f"splash-local-{revision}-arm64-macos26.tar.gz"
+        )
+        evidence_archive = attempt / revision_archive.name
+        shutil.copyfile(revision_archive, evidence_archive)
+        package_source = (
+            self.root / f"splash-qualified-package-fixture-{revision}" / "source"
+        )
+        package_stdout = attempt / "07-package.stdout"
+        package_stderr = attempt / "07-package.stderr"
+        package_stdout.write_text("package stdout\n", encoding="utf-8")
+        package_stderr.write_text("package stderr\n", encoding="utf-8")
+        package_argv = [
+            str(Path.home() / ".local/bin/heavy-op"),
+            "make",
+            "package",
+            f"RELEASE_VERSION=local-{revision}",
+            "PYTHON_CANDIDATES=python3",
+        ]
+        package_streams = {
+            "stdout": {
+                "path": str(package_stdout),
+                "size": package_stdout.stat().st_size,
+                "sha256": digest(package_stdout),
+            },
+            "stderr": {
+                "path": str(package_stderr),
+                "size": package_stderr.stat().st_size,
+                "sha256": digest(package_stderr),
+            },
+        }
         receipt = {
             "schema": splash_runtime.QUALIFICATION_SCHEMA,
             "status": "pass",
@@ -89,12 +116,37 @@ class LocalInstallTests(unittest.TestCase):
             "heavy_op": {"need_gb": splash_runtime.HEAVY_OP_NEED_GB},
             "required_targets": list(splash_runtime.QUALIFICATION_TARGETS),
             "gates": gates,
+            "package_artifact": {
+                "status": "pass",
+                "source_revision": revision,
+                "source_path": str(package_source),
+                "source_recheck_before": {"status": "pass", "revision": revision},
+                "source_recheck_after": {"status": "pass", "revision": revision},
+                "argv": package_argv,
+                "cwd": str(package_source),
+                "return_code": 0,
+                "heavy_op_need_gb": splash_runtime.HEAVY_OP_NEED_GB,
+                "archive": {
+                    "path": str(evidence_archive),
+                    "size": evidence_archive.stat().st_size,
+                    "sha256": digest(evidence_archive),
+                },
+                "worktree_cleanup": {"status": "pass"},
+                "temporary_cleanup": {"status": "pass"},
+                "command_evidence": {
+                    "argv": package_argv,
+                    "cwd": str(package_source),
+                    "return_code": 0,
+                    "heavy_op_need_gb": splash_runtime.HEAVY_OP_NEED_GB,
+                    **package_streams,
+                },
+            },
         }
         receipt_path = attempt / "qualification.json"
         receipt_path.write_text(json.dumps(receipt, sort_keys=True), encoding="utf-8")
         return receipt_path
 
-    def _package(self, source: Path, revision: str) -> None:
+    def _package(self, source: Path, revision: str) -> Path:
         """Create a deterministic fake runtime archive for a source revision."""
         version = splash_runtime._source_version(source, revision)
         name = f"splash-{version}-arm64-macos26"
@@ -142,6 +194,7 @@ class LocalInstallTests(unittest.TestCase):
         archive_path.with_suffix(archive_path.suffix + ".sha256").write_text(
             digest(archive_path) + "\n", encoding="ascii"
         )
+        return archive_path
 
     def test_install_update_verify_rollback_uninstall_and_legacy_preservation(self):
         """Exercise atomic current/previous transitions and exact ownership cleanup."""
@@ -251,11 +304,83 @@ class LocalInstallTests(unittest.TestCase):
         revision = "4" * 40
         source = self.root / revision
         source.mkdir()
+        self._package(source, revision)
         receipt_path = self._qualification(source, revision)
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
         receipt["gates"][1]["argv"] = ["make", "check-native-cpu"]
         receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
         with self.assertRaisesRegex(RuntimeError, "command does not match"):
+            splash_runtime._load_qualification(receipt_path, revision)
+
+    def test_qualification_uses_heavy_op_and_distinct_python_stamps(self):
+        """Keep every qualification target admitted and each Python environment isolated."""
+        temporary = self.root / "splash-qualification-command-fixture"
+        commands = splash_runtime._qualification_commands(temporary)
+        self.assertEqual(
+            [name for name, _, _ in commands],
+            list(splash_runtime.QUALIFICATION_TARGETS),
+        )
+        for _, argv, environment in commands:
+            self.assertEqual(argv[0], str(Path.home() / ".local/bin/heavy-op"))
+            self.assertEqual(environment["HEAVY_OP_NEED_GB"], "16")
+        python_scripts = [
+            argv[3]
+            for name, argv, _ in commands
+            if name.startswith("check-python-engine:")
+        ]
+        self.assertEqual(len(python_scripts), 3)
+        for version in ("3.12", "3.13", "3.14"):
+            matching = [
+                script for script in python_scripts if f"python-{version}" in script
+            ]
+            self.assertEqual(len(matching), 1)
+            self.assertIn(f"PYTHON_CANDIDATES=python{version}", matching[0])
+            self.assertIn("DEV_STAMP=", matching[0])
+            self.assertIn(f'test "$actual" = "{version}"', matching[0])
+
+    def test_install_ignores_unqualified_preexisting_dist_archive(self):
+        """Install only the package copied into the qualified receipt evidence."""
+        revision = "6" * 40
+        source = self.root / revision
+        source.mkdir()
+        archive = self._package(source, revision)
+        qualification = self._qualification(source, revision)
+        original_hash = digest(archive)
+        archive.write_bytes(b"unqualified replacement archive")
+        archive.with_suffix(archive.suffix + ".sha256").write_text(
+            digest(archive) + "\n", encoding="ascii"
+        )
+
+        with mock.patch.object(
+            splash_runtime, "_qualified_revision", return_value=revision
+        ):
+            installed = splash_runtime._install_release(
+                self.paths, source, qualification
+            )
+
+        package_evidence = json.loads(qualification.read_text(encoding="utf-8"))[
+            "package_artifact"
+        ]["archive"]
+        self.assertEqual(package_evidence["sha256"], original_hash)
+        self.assertEqual(installed["package"]["sha256"], original_hash)
+        self.assertEqual(
+            Path(installed["package"]["path"]), Path(package_evidence["path"])
+        )
+
+    def test_qualification_rejects_changed_bound_package_archive(self):
+        """Refuse package bytes that no longer match their qualification hash."""
+        revision = "7" * 40
+        source = self.root / revision
+        source.mkdir()
+        self._package(source, revision)
+        receipt_path = self._qualification(source, revision)
+        package_path = Path(
+            json.loads(receipt_path.read_text(encoding="utf-8"))["package_artifact"][
+                "archive"
+            ]["path"]
+        )
+        package_path.write_bytes(b"changed after qualification")
+        with self.assertRaisesRegex(RuntimeError, "package archive evidence changed"):
             splash_runtime._load_qualification(receipt_path, revision)
 
     def test_archive_extraction_rejects_parent_escape(self):

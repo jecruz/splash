@@ -133,8 +133,14 @@ private mirror is available.
 
 Qualification runs `make check-source`, `make check-native-cpu`,
 `make test-sanitizers`, and `make check-python-engine` in fresh Python 3.12,
-3.13, and 3.14 environments. Native builds, sanitizers, Python gates, and
-package builds run through `~/.local/bin/heavy-op` with a 16 GiB reservation.
+3.13, and 3.14 environments. Each Python gate has its own fresh venv and
+development-dependency stamp and asserts the resulting interpreter version.
+All qualification targets and the package build run through
+`~/.local/bin/heavy-op` with a 16 GiB reservation. Qualification builds the
+package from a fresh detached worktree of the qualified SHA, rechecks that
+worktree, and copies the archive into the qualification evidence directory.
+The receipt binds its exact package SHA-256; install refuses an archive that
+does not match that record, including a pre-existing `dist` archive.
 The installer validates the archive checksum and embedded `release.json`
 hashes before creating the immutable
 `~/.local/share/splash/releases/<full-commit-sha>` directory. It atomically

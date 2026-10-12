@@ -24,7 +24,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterator, Sequence
 
 SCHEMA_VERSION = 1
-QUALIFICATION_SCHEMA = "splash-local-qualification-v1"
+QUALIFICATION_SCHEMA = "splash-local-qualification-v2"
 INSTALLATION_SCHEMA = "splash-local-installation-v1"
 DEFAULT_PORT = 8318
 QUALIFICATION_TARGETS = (
@@ -197,11 +197,12 @@ def _qualified_revision(source: Path) -> str:
 
 def _expected_gate_argv(target: str, temporary_root: Path) -> list[str]:
     """Return the exact argv allowed for one qualification target."""
+    heavy_op = str(Path.home() / ".local/bin/heavy-op")
     if target == "check-source":
-        return ["make", "check-source"]
+        return [heavy_op, "make", "check-source"]
     if target in {"check-native-cpu", "test-sanitizers"}:
         return [
-            str(Path.home() / ".local/bin/heavy-op"),
+            heavy_op,
             "make",
             target,
             "PYTHON_CANDIDATES=python3",
@@ -210,13 +211,26 @@ def _expected_gate_argv(target: str, temporary_root: Path) -> list[str]:
     if not match:
         raise RuntimeError(f"unknown local qualification target: {target}")
     version = match.group(1)
+    venv = temporary_root / f"python-{version}"
+    script = _python_gate_script(version, venv)
     return [
-        str(Path.home() / ".local/bin/heavy-op"),
-        "make",
-        "check-python-engine",
-        f"PYTHON_CANDIDATES=python{version}",
-        f"VENV={temporary_root / f'python-{version}'}",
+        heavy_op,
+        "/bin/sh",
+        "-c",
+        script,
     ]
+
+
+def _python_gate_script(version: str, venv: Path) -> str:
+    """Run one Python gate with isolated dependencies and a CI-style version assertion."""
+    version_code = "import sys; print('%d.%d' % sys.version_info[:2])"
+    return (
+        "set -eu; "
+        f"make check-python-engine PYTHON_CANDIDATES=python{version} "
+        f"VENV={venv} DEV_STAMP={venv}/.dev-requirements-installed; "
+        f'actual=$({venv}/bin/python -c "{version_code}"); '
+        f'test "$actual" = "{version}"'
+    )
 
 
 def _run_recorded(
@@ -281,28 +295,163 @@ def _qualification_commands(
     temporary: Path,
 ) -> list[tuple[str, list[str], dict[str, str] | None]]:
     """Construct the approved local-CI targets and fresh Python environments."""
-    commands: list[tuple[str, list[str], dict[str, str] | None]] = [
-        ("check-source", ["make", "check-source"], None)
-    ]
-    for target in ("check-native-cpu", "test-sanitizers"):
+    commands: list[tuple[str, list[str], dict[str, str] | None]] = []
+    for target in ("check-source", "check-native-cpu", "test-sanitizers"):
         heavy_argv, heavy_env = _heavy_command(
-            ["make", target, "PYTHON_CANDIDATES=python3"], need_gb=HEAVY_OP_NEED_GB
+            ["make", target]
+            if target == "check-source"
+            else ["make", target, "PYTHON_CANDIDATES=python3"],
+            need_gb=HEAVY_OP_NEED_GB,
         )
         commands.append((target, heavy_argv, heavy_env))
     for version in ("3.12", "3.13", "3.14"):
-        candidate = f"python{version}"
         venv = temporary / f"python-{version}"
         heavy_argv, heavy_env = _heavy_command(
-            [
-                "make",
-                "check-python-engine",
-                f"PYTHON_CANDIDATES={candidate}",
-                f"VENV={venv}",
-            ],
+            ["/bin/sh", "-c", _python_gate_script(version, venv)],
             need_gb=HEAVY_OP_NEED_GB,
         )
         commands.append((f"check-python-engine:{version}", heavy_argv, heavy_env))
     return commands
+
+
+def _copy_archive_evidence(source: Path, destination: Path) -> dict[str, Any]:
+    """Copy a built package into immutable qualification evidence without following links."""
+    source_hash = _sha256(source)
+    descriptor = os.open(
+        source,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+    )
+    target_descriptor = os.open(
+        destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+    )
+    try:
+        with (
+            os.fdopen(descriptor, "rb") as input_file,
+            os.fdopen(target_descriptor, "wb") as output_file,
+        ):
+            before = os.fstat(input_file.fileno())
+            if not stat.S_ISREG(before.st_mode):
+                raise RuntimeError("built package archive is not a regular file")
+            shutil.copyfileobj(input_file, output_file, 1024 * 1024)
+            output_file.flush()
+            os.fsync(output_file.fileno())
+            after = os.fstat(input_file.fileno())
+            if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+            ):
+                raise RuntimeError("built package changed while copying evidence")
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        raise
+    copied_hash = _sha256(destination)
+    if copied_hash != source_hash:
+        destination.unlink(missing_ok=True)
+        raise RuntimeError("qualified package archive changed while copying evidence")
+    return {
+        "path": str(destination),
+        "size": destination.stat().st_size,
+        "sha256": copied_hash,
+    }
+
+
+def _build_qualified_package(
+    source: Path, revision: str, attempt: Path
+) -> dict[str, Any]:
+    """Build and hash a package from a fresh detached worktree of the qualified commit."""
+    result: dict[str, Any] = {
+        "status": "fail",
+        "source_revision": revision,
+        "source_path": None,
+        "source_recheck_before": None,
+        "source_recheck_after": None,
+        "argv": None,
+        "cwd": None,
+        "return_code": None,
+        "heavy_op_need_gb": HEAVY_OP_NEED_GB,
+        "archive": None,
+        "worktree_cleanup": None,
+    }
+    temporary = tempfile.TemporaryDirectory(prefix="splash-qualified-package-")
+    worktree = Path(temporary.name) / "source"
+    worktree_added = False
+    try:
+        _git(source, "worktree", "add", "--detach", str(worktree), revision)
+        worktree_added = True
+        result["source_path"] = str(worktree)
+        before = _qualified_revision(worktree)
+        result["source_recheck_before"] = {"status": "pass", "revision": before}
+        if before != revision:
+            raise RuntimeError("package worktree does not match qualified source")
+        version = _source_version(worktree, revision)
+        archive = worktree / "dist" / f"splash-{version}-arm64-macos26.tar.gz"
+        if archive.exists() or archive.is_symlink():
+            raise RuntimeError(
+                "fresh package worktree already contains a release archive"
+            )
+        heavy_argv, environment = _heavy_command(
+            [
+                "make",
+                "package",
+                f"RELEASE_VERSION={version}",
+                "PYTHON_CANDIDATES=python3",
+            ],
+            need_gb=HEAVY_OP_NEED_GB,
+        )
+        result["argv"] = heavy_argv
+        result["cwd"] = str(worktree)
+        stdout_path = attempt / "07-package.stdout"
+        stderr_path = attempt / "07-package.stderr"
+        command_record = _run_recorded(
+            heavy_argv,
+            cwd=worktree,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            environment=environment,
+        )
+        result["return_code"] = command_record["return_code"]
+        result["command_evidence"] = command_record
+        if command_record["return_code"] != 0:
+            raise RuntimeError("heavy-op package build failed")
+        after = _qualified_revision(worktree)
+        result["source_recheck_after"] = {"status": "pass", "revision": after}
+        if after != revision:
+            raise RuntimeError("package source changed during build")
+        checksum_path = archive.with_suffix(archive.suffix + ".sha256")
+        expected_checksum = (
+            _read_regular(checksum_path, maximum_bytes=128).decode("ascii").strip()
+        )
+        archive_hash = _sha256(archive)
+        if expected_checksum != archive_hash:
+            raise RuntimeError("package checksum sidecar does not match built archive")
+        evidence_archive = attempt / archive.name
+        result["archive"] = _copy_archive_evidence(archive, evidence_archive)
+        result["status"] = "pass"
+    except (
+        OSError,
+        RuntimeError,
+        UnicodeDecodeError,
+        subprocess.CalledProcessError,
+    ) as error:
+        result["error"] = str(error)
+    finally:
+        if worktree_added:
+            try:
+                _git(source, "worktree", "remove", "--force", str(worktree))
+                result["worktree_cleanup"] = {"status": "pass"}
+            except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+                result["worktree_cleanup"] = {"status": "fail", "error": str(error)}
+                result["status"] = "fail"
+        try:
+            temporary.cleanup()
+        except OSError as error:
+            result["temporary_cleanup"] = {"status": "fail", "error": str(error)}
+            result["status"] = "fail"
+        else:
+            result["temporary_cleanup"] = {"status": "pass"}
+    return result
 
 
 def qualify_source(source: Path, state_root: Path) -> dict[str, Any]:
@@ -338,6 +487,13 @@ def qualify_source(source: Path, state_root: Path) -> dict[str, Any]:
             if record["return_code"] != 0:
                 overall = "fail"
                 break
+    package_artifact = (
+        _build_qualified_package(source, revision, attempt)
+        if overall == "pass" and len(gates) == len(QUALIFICATION_TARGETS)
+        else {"status": "not-run", "source_revision": revision}
+    )
+    if package_artifact.get("status") != "pass":
+        overall = "fail"
     try:
         final_revision = _qualified_revision(source)
         source_recheck = {"status": "pass", "revision": final_revision}
@@ -362,6 +518,7 @@ def qualify_source(source: Path, state_root: Path) -> dict[str, Any]:
         "heavy_op": {"need_gb": HEAVY_OP_NEED_GB},
         "required_targets": list(QUALIFICATION_TARGETS),
         "gates": gates,
+        "package_artifact": package_artifact,
     }
     receipt_path = attempt / "qualification.json"
     _write_json_exclusive(receipt_path, receipt)
@@ -482,7 +639,7 @@ def _load_qualification(path: Path, revision: str) -> tuple[dict[str, Any], str]
             raise RuntimeError("qualification command ran from a different source tree")
         if gate.get("argv") != _expected_gate_argv(target, temporary_root):
             raise RuntimeError(f"qualification command does not match target {target}")
-        expected_need = None if target == "check-source" else HEAVY_OP_NEED_GB
+        expected_need = HEAVY_OP_NEED_GB
         if gate.get("heavy_op_need_gb") != expected_need:
             raise RuntimeError(
                 f"qualification target {target} used the wrong heavy-op policy"
@@ -509,6 +666,76 @@ def _load_qualification(path: Path, revision: str) -> tuple[dict[str, Any], str]
         raise RuntimeError(
             "qualification did not use one fresh root and three Python environments"
         )
+    package = document.get("package_artifact")
+    if not isinstance(package, dict) or package.get("status") != "pass":
+        raise RuntimeError("qualification receipt has no successful package build")
+    if (
+        package.get("source_revision") != revision
+        or package.get("return_code") != 0
+        or package.get("heavy_op_need_gb") != HEAVY_OP_NEED_GB
+        or package.get("worktree_cleanup") != {"status": "pass"}
+        or package.get("temporary_cleanup") != {"status": "pass"}
+        or package.get("source_recheck_before")
+        != {"status": "pass", "revision": revision}
+        or package.get("source_recheck_after")
+        != {"status": "pass", "revision": revision}
+        or package.get("argv")
+        != [
+            str(Path.home() / ".local/bin/heavy-op"),
+            "make",
+            "package",
+            f"RELEASE_VERSION=local-{revision}",
+            "PYTHON_CANDIDATES=python3",
+        ]
+    ):
+        raise RuntimeError(
+            "qualification package build does not match source or heavy-op policy"
+        )
+    package_source = package.get("source_path")
+    if (
+        not isinstance(package_source, str)
+        or not Path(package_source).is_absolute()
+        or not Path(package_source).parent.name.startswith("splash-qualified-package-")
+        or package.get("cwd") != package_source
+    ):
+        raise RuntimeError(
+            "qualification package was not built in a fresh private worktree"
+        )
+    command_evidence = package.get("command_evidence")
+    if (
+        not isinstance(command_evidence, dict)
+        or command_evidence.get("argv") != package.get("argv")
+        or command_evidence.get("cwd") != package_source
+        or command_evidence.get("return_code") != 0
+        or command_evidence.get("heavy_op_need_gb") != HEAVY_OP_NEED_GB
+    ):
+        raise RuntimeError("qualification package command evidence is missing")
+    for key in ("stdout", "stderr"):
+        stream = command_evidence.get(key)
+        if not isinstance(stream, dict):
+            raise RuntimeError(f"qualification package evidence is missing {key}")
+        stream_path = Path(stream.get("path", ""))
+        if (
+            not stream_path.is_relative_to(path.parent)
+            or stream_path.is_symlink()
+            or not stream_path.is_file()
+            or stream_path.stat().st_size != stream.get("size")
+            or _sha256(stream_path) != stream.get("sha256")
+        ):
+            raise RuntimeError(f"qualification package {key} evidence changed")
+    archive = package.get("archive")
+    if not isinstance(archive, dict):
+        raise RuntimeError("qualification receipt is missing its package archive")
+    archive_path = Path(str(archive.get("path", "")))
+    if (
+        not archive_path.is_relative_to(path.parent)
+        or archive_path.is_symlink()
+        or not archive_path.is_file()
+        or archive_path.name != f"splash-local-{revision}-arm64-macos26.tar.gz"
+        or archive_path.stat().st_size != archive.get("size")
+        or _sha256(archive_path) != archive.get("sha256")
+    ):
+        raise RuntimeError("qualification package archive evidence changed")
     return document, hashlib.sha256(raw).hexdigest()
 
 
@@ -773,6 +1000,12 @@ def _validate_manifest(paths: RuntimePaths, release: Path) -> dict[str, Any]:
     ):
         raise RuntimeError("manifest qualification receipt is missing or changed")
     receipt, _ = _load_qualification(receipt_path, revision)
+    qualified_archive = receipt["package_artifact"]["archive"]
+    if archive != {
+        "path": qualified_archive["path"],
+        "sha256": qualified_archive["sha256"],
+    }:
+        raise RuntimeError("manifest package bytes do not match qualification evidence")
     if manifest.get("source_path") != receipt["source_path"]:
         raise RuntimeError("manifest source path does not match qualification receipt")
     if manifest.get("origin_url") != receipt["origin_url"]:
@@ -883,35 +1116,12 @@ def _source_version(source: Path, revision: str) -> str:
     return f"local-{revision}"
 
 
-def _build_package(source: Path, revision: str) -> Path:
-    """Build one release archive through the mandatory heavy-op wrapper."""
-    _assert_no_symlink_components(source / "dist")
-    if (source / "dist").exists() and not (source / "dist").is_dir():
-        raise RuntimeError("package output path is not a directory")
-    version = _source_version(source, revision)
-    heavy_argv, environment = _heavy_command(
-        ["make", "package", f"RELEASE_VERSION={version}", "PYTHON_CANDIDATES=python3"],
-        need_gb=HEAVY_OP_NEED_GB,
-    )
-    subprocess.run(heavy_argv, cwd=source, env=environment, check=True)
-    archive = source / "dist" / f"splash-{version}-arm64-macos26.tar.gz"
-    checksum = archive.with_suffix(archive.suffix + ".sha256")
-    if not archive.is_file() or not checksum.is_file():
-        raise RuntimeError(
-            "heavy-op package command did not produce archive and checksum"
-        )
-    expected = _read_regular(checksum, maximum_bytes=128).decode("ascii").strip()
-    if not re.fullmatch(r"[0-9a-f]{64}", expected) or _sha256(archive) != expected:
-        raise RuntimeError("built package checksum does not match its sidecar")
-    return archive
-
-
 def _install_release(
     paths: RuntimePaths,
     source: Path,
     qualification_path: Path,
 ) -> dict[str, Any]:
-    """Build and atomically promote a qualified fork-main release."""
+    """Install the exact package artifact bound into a clean fork-main qualification."""
     source = source.resolve()
     revision = _qualified_revision(source)
     qualification_path = qualification_path.expanduser().absolute()
@@ -937,26 +1147,12 @@ def _install_release(
             else None
         )
         paths.releases.mkdir(parents=True, exist_ok=True)
-        _assert_no_symlink_components(source / "dist")
-        if (source / "dist").exists() and not (source / "dist").is_dir():
-            raise RuntimeError("package output path is not a directory")
         version = _source_version(source, revision)
-        archive_path = source / "dist" / f"splash-{version}-arm64-macos26.tar.gz"
-        checksum_path = archive_path.with_suffix(archive_path.suffix + ".sha256")
-        if archive_path.is_symlink():
-            raise RuntimeError(f"refusing symlinked package archive: {archive_path}")
-        if not archive_path.exists():
-            archive_path = _build_package(source, revision)
-            checksum_path = archive_path.with_suffix(archive_path.suffix + ".sha256")
+        package_evidence = qualification["package_artifact"]["archive"]
+        archive_path = Path(package_evidence["path"])
         archive_hash = _sha256(archive_path)
-        if (
-            not checksum_path.is_file()
-            or _read_regular(checksum_path, maximum_bytes=128).decode("ascii").strip()
-            != archive_hash
-        ):
-            raise RuntimeError(
-                "package archive checksum sidecar is missing or incorrect"
-            )
+        if archive_hash != package_evidence["sha256"]:
+            raise RuntimeError("qualified package archive hash changed before install")
         if destination.is_symlink():
             raise RuntimeError(f"refusing symlinked release destination: {destination}")
         if destination.exists():

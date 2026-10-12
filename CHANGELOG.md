@@ -27,6 +27,8 @@
 
 ### Fixed
 
+- Bind installable package bytes to the local qualification receipt and build them
+  from a fresh detached worktree of the qualified fork commit.
 - Allow the architecture check's manifest-gated Qwen3.8 assembly profile while
   continuing to reject operator workspace policy elsewhere.
 - Stage release package trees in the system temporary directory and report
