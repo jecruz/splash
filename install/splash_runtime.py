@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import posixpath
+import pwd
 import re
 import shutil
 import stat
@@ -197,7 +198,7 @@ def _qualified_revision(source: Path) -> str:
 
 def _expected_gate_argv(target: str, temporary_root: Path) -> list[str]:
     """Return the exact argv allowed for one qualification target."""
-    heavy_op = str(Path.home() / ".local/bin/heavy-op")
+    heavy_op = str(_heavy_op_path())
     if target == "check-source":
         return [heavy_op, "make", "check-source"]
     if target in {"check-native-cpu", "test-sanitizers"}:
@@ -283,12 +284,17 @@ def _heavy_command(
     command: Sequence[str], *, need_gb: int
 ) -> tuple[list[str], dict[str, str]]:
     """Return the required heavy-op argv and its admission environment."""
-    heavy_op = Path.home() / ".local/bin/heavy-op"
+    heavy_op = _heavy_op_path()
     if not heavy_op.is_file() or not os.access(heavy_op, os.X_OK):
         raise RuntimeError(f"required heavy-op executable is unavailable: {heavy_op}")
     environment = os.environ.copy()
     environment["HEAVY_OP_NEED_GB"] = str(need_gb)
     return [str(heavy_op), *command], environment
+
+
+def _heavy_op_path() -> Path:
+    """Resolve the installed heavy-op from the current account database home."""
+    return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".local/bin/heavy-op"
 
 
 def _qualification_commands(
@@ -681,7 +687,7 @@ def _load_qualification(path: Path, revision: str) -> tuple[dict[str, Any], str]
         != {"status": "pass", "revision": revision}
         or package.get("argv")
         != [
-            str(Path.home() / ".local/bin/heavy-op"),
+            str(_heavy_op_path()),
             "make",
             "package",
             f"RELEASE_VERSION=local-{revision}",

@@ -27,6 +27,8 @@
 
 ### Fixed
 
+- Resolve `heavy-op` from the account database home so local qualification works
+  when CI gives the build an isolated `HOME`.
 - Bind installable package bytes to the local qualification receipt and build them
   from a fresh detached worktree of the qualified fork commit.
 - Reject abbreviated API-key options so launcher credentials stay environment-only.

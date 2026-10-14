@@ -11,6 +11,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from install import splash_runtime
@@ -83,7 +84,7 @@ class LocalInstallTests(unittest.TestCase):
         package_stdout.write_text("package stdout\n", encoding="utf-8")
         package_stderr.write_text("package stderr\n", encoding="utf-8")
         package_argv = [
-            str(Path.home() / ".local/bin/heavy-op"),
+            str(splash_runtime._heavy_op_path()),
             "make",
             "package",
             f"RELEASE_VERSION=local-{revision}",
@@ -321,7 +322,7 @@ class LocalInstallTests(unittest.TestCase):
             list(splash_runtime.QUALIFICATION_TARGETS),
         )
         for _, argv, environment in commands:
-            self.assertEqual(argv[0], str(Path.home() / ".local/bin/heavy-op"))
+            self.assertEqual(argv[0], str(splash_runtime._heavy_op_path()))
             self.assertEqual(environment["HEAVY_OP_NEED_GB"], "16")
         python_scripts = [
             argv[3]
@@ -337,6 +338,42 @@ class LocalInstallTests(unittest.TestCase):
             self.assertIn(f"PYTHON_CANDIDATES=python{version}", matching[0])
             self.assertIn("DEV_STAMP=", matching[0])
             self.assertIn(f'test "$actual" = "{version}"', matching[0])
+
+    def test_qualification_uses_account_home_when_home_is_isolated(self):
+        """Resolve heavy-op from the account database, not the isolated build HOME."""
+        account_home = self.root / "account-home"
+        isolated_home = self.root / "isolated-home"
+        heavy_op = account_home / ".local/bin/heavy-op"
+        heavy_op.parent.mkdir(parents=True)
+        heavy_op.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        heavy_op.chmod(0o755)
+        passwd_record = SimpleNamespace(pw_dir=str(account_home))
+        passwd_module = SimpleNamespace(
+            getpwuid=lambda _uid: passwd_record,
+        )
+
+        with (
+            mock.patch.dict(os.environ, {"HOME": str(isolated_home)}),
+            mock.patch.object(splash_runtime, "pwd", passwd_module, create=True),
+        ):
+            self.assertEqual(Path.home(), isolated_home)
+            commands = splash_runtime._qualification_commands(
+                self.root / "isolated-home-qualification"
+            )
+            self.assertTrue(commands)
+            for _, argv, environment in commands:
+                self.assertEqual(argv[0], str(heavy_op))
+                self.assertEqual(environment["HOME"], str(isolated_home))
+            expected = splash_runtime._expected_gate_argv(
+                "check-source", self.root / "isolated-home-qualification"
+            )
+            self.assertEqual(expected[0], str(heavy_op))
+            revision = "8" * 40
+            source = self.root / revision
+            source.mkdir()
+            self._package(source, revision)
+            receipt_path = self._qualification(source, revision)
+            splash_runtime._load_qualification(receipt_path, revision)
 
     def test_install_ignores_unqualified_preexisting_dist_archive(self):
         """Install only the package copied into the qualified receipt evidence."""
