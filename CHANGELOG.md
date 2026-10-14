@@ -36,3 +36,5 @@
   continuing to reject operator workspace policy elsewhere.
 - Stage release package trees in the system temporary directory and report
   remaining entries when staging cleanup fails with `ENOTEMPTY`.
+- Give the real-pipe partial-write regression test a wider I/O timeout and
+  matching request/result bounds so CI scheduling cannot race its status check.

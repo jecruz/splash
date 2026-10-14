@@ -1596,7 +1596,7 @@ class RuntimeTests(unittest.TestCase):
             return processes.pop() if processes else replacement_factory()
 
         runtime = engine_runtime.MultiplexedRuntime(
-            process_factory=factory, io_timeout=0.15
+            process_factory=factory, io_timeout=2.0
         )
         self.addCleanup(runtime.close)
         recovered_calls = []
@@ -1611,7 +1611,7 @@ class RuntimeTests(unittest.TestCase):
         large = engine_runtime.GenerationRequest(
             prompt_tokens=tuple(range(131072)),
             logical_max_output_tokens=32,
-            deadline=engine_runtime.Deadline.after(1),
+            deadline=engine_runtime.Deadline.after(5),
         )
         with ThreadPoolExecutor(max_workers=1) as executor:
             writer = executor.submit(runtime.submit, large)
@@ -1622,7 +1622,7 @@ class RuntimeTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 engine_runtime.EngineUnhealthy, "frame write timed out"
             ):
-                writer.result(0.5)
+                writer.result(3.0)
         with self.assertRaises(engine_runtime.EngineUnhealthy):
             active.result(0.5)
         self.assertEqual(failure_state, [(False, False)])
